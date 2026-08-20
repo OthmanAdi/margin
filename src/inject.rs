@@ -72,12 +72,8 @@ pub fn render(ratings: &[Rating], trigger: Trigger) -> Option<String> {
         return None;
     }
 
-    // Oldest first so the freshest judgment occupies the final, highest-weight position.
-    let mut ordered: Vec<&Rating> = ratings.iter().collect();
-    ordered.sort_by(|a, b| a.at.cmp(&b.at));
-    // When the cap bites, drop the stalest rather than the newest.
-    let start = ordered.len().saturating_sub(MAX_PER_INJECTION);
-    let shown = &ordered[start..];
+    let selected = select(ratings);
+    let shown = selected.as_slice();
 
     let mut s = String::new();
     s.push_str(&format!(
@@ -126,6 +122,20 @@ pub fn render(ratings: &[Rating], trigger: Trigger) -> Option<String> {
     s.push_str("Do not comment on this block unless the user asks what changed.\n");
     s.push_str("</margin-signal>");
     Some(s)
+}
+
+/// Exactly the ratings a call to `render` would include.
+///
+/// Callers must mark these delivered rather than everything pending. Marking the whole queue
+/// while rendering only the newest few silently discarded the rest: they were recorded as
+/// sent and never shown to anyone.
+pub fn select(ratings: &[Rating]) -> Vec<&Rating> {
+    // Oldest first so the freshest judgment occupies the final, highest-weight position.
+    let mut ordered: Vec<&Rating> = ratings.iter().collect();
+    ordered.sort_by(|a, b| a.at.cmp(&b.at));
+    // When the cap bites, drop the stalest rather than the newest.
+    let start = ordered.len().saturating_sub(MAX_PER_INJECTION);
+    ordered[start..].to_vec()
 }
 
 fn headline(r: &Rating) -> &'static str {
@@ -277,6 +287,37 @@ mod tests {
             preview: Some(preview.to_string()),
             subject: subject.map(str::to_string),
         }
+    }
+
+    /// The caller marks exactly what select returns. Marking everything pending while
+    /// rendering only the newest few retired ratings nobody ever saw.
+    #[test]
+    fn select_returns_exactly_what_render_shows() {
+        let many: Vec<Rating> = (0..MAX_PER_INJECTION + 4)
+            .map(|i| {
+                r(
+                    &format!("m{i}"),
+                    Verdict::Up,
+                    &format!("2026-08-20T12:00:{:02}Z", i),
+                    None,
+                    &format!("moment number {i}"),
+                )
+            })
+            .collect();
+
+        let chosen = select(&many);
+        assert_eq!(chosen.len(), MAX_PER_INJECTION);
+
+        let out = render(&many, Trigger::PostToolUse).unwrap();
+        for c in &chosen {
+            assert!(
+                out.contains(c.preview.as_deref().unwrap()),
+                "select returned something render did not show"
+            );
+        }
+        // and the ones it dropped stay out of the block, so they remain pending
+        assert!(!out.contains("moment number 0"));
+        assert!(!out.contains("moment number 1"));
     }
 
     #[test]

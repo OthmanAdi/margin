@@ -56,11 +56,23 @@ pub fn reasoning_health(input: &str) -> ReasoningHealth {
 }
 
 pub fn parse(input: &str) -> Vec<Moment> {
+    parse_at(input, 0)
+}
+
+/// Parse a chunk that begins at absolute line `first_line` of the rollout.
+///
+/// The offset is load-bearing. Codex events carry no id of their own, so identity is the
+/// line number, and a live tail feeds this function only the newly appended lines. Counting
+/// from zero each time made the first line of every poll `L0`, so a fresh moment collided
+/// with an older one, overwrote it in place, and inherited its rating. That is the worst
+/// failure this tool has: a verdict silently pointing at content the user never saw.
+pub fn parse_at(input: &str, first_line: usize) -> Vec<Moment> {
     let mut out = Vec::new();
     let mut seq = 0usize;
     let mut session_id = String::from("unknown");
 
-    for (line_no, line) in input.lines().enumerate() {
+    for (offset, line) in input.lines().enumerate() {
+        let line_no = first_line + offset;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -95,8 +107,6 @@ pub fn parse(input: &str) -> Vec<Moment> {
             continue;
         };
 
-        // Codex events carry no per-event id, so identity is the line number. Rollouts are
-        // append-only and never rewritten, which is what makes that safe here.
         let entry = format!("L{line_no}");
 
         let kind = match ptype {
@@ -248,6 +258,32 @@ mod tests {
             moments.iter().all(|m| m.id.session_id != "unknown"),
             "some moments were left without a session id"
         );
+    }
+
+    /// A live tail hands this function only the newly appended lines. Numbering from zero
+    /// per chunk made the first line of every poll `L0`, so a new moment collided with an
+    /// older one, overwrote it, and inherited its rating.
+    #[test]
+    fn ids_do_not_collide_across_polls() {
+        let a = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"agent_message","message":"A"}}"#;
+        let b = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"agent_message","message":"B"}}"#;
+
+        // one poll delivering A, a later poll delivering B
+        let first = parse_at(a, 0);
+        let second = parse_at(b, 1);
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(
+            first[0].id, second[0].id,
+            "second poll reused the first poll's id; a rating would move to another moment"
+        );
+
+        // and the offset form must agree with parsing the whole file at once
+        let whole = parse(&format!("{a}\n{b}"));
+        assert_eq!(whole.len(), 2);
+        assert_eq!(whole[0].id, first[0].id);
+        assert_eq!(whole[1].id, second[0].id);
     }
 
     #[test]

@@ -10,9 +10,18 @@ use crate::moment::{Harness, Moment};
 
 /// Parse a transcript for a known harness.
 pub fn parse(harness: Harness, input: &str) -> Vec<Moment> {
+    parse_at(harness, input, 0)
+}
+
+/// Parse a chunk beginning at absolute line `first_line`.
+///
+/// Claude Code ignores the offset because its entries carry their own `uuid`. Codex needs
+/// it: its identities are line numbers, and a live tail hands over only the new lines, so
+/// counting from zero per chunk makes ids collide across polls.
+pub fn parse_at(harness: Harness, input: &str, first_line: usize) -> Vec<Moment> {
     match harness {
         Harness::ClaudeCode => claude_code::parse(input),
-        Harness::Codex => codex::parse(input),
+        Harness::Codex => codex::parse_at(input, first_line),
     }
 }
 

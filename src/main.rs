@@ -4,7 +4,7 @@ use margin::discover;
 use margin::harness;
 use margin::inject::{self, Trigger};
 use margin::moment::Harness;
-use margin::ratings::{Store, Verdict};
+use margin::ratings::{Rating, Store, Verdict};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -184,6 +184,14 @@ fn hook(event: &str) -> Result<()> {
         return Ok(()); // not a hook payload we understand; stay quiet
     };
 
+    // Subagents fire hooks carrying the parent's session_id plus an agent_id. Answering one
+    // would hand a rating meant for the main agent to a subagent that never did the thing
+    // being rated, and mark it delivered so the main agent never sees it. Until margin can
+    // tell the branches apart, a subagent hook does nothing.
+    if payload.get("agent_id").is_some() {
+        return Ok(());
+    }
+
     let home = discover::home()?;
     let store = Store::for_session(&store_root(&home), Harness::ClaudeCode.as_str(), session_id);
 
@@ -197,18 +205,21 @@ fn hook(event: &str) -> Result<()> {
         return Ok(()); // nothing rated since last time: emit nothing at all
     };
 
+    // Only what actually went into the block. render caps the batch, so marking everything
+    // pending would retire ratings nobody ever saw.
+    let sent: Vec<Rating> = inject::select(&pending).into_iter().cloned().collect();
+
     // Mark delivered before printing. If the process dies between the two, a rating is lost
     // rather than repeated, and losing one is far less damaging to a context than looping
     // the same complaint at every tool call.
-    let ids: Vec<_> = pending.iter().map(|r| r.moment.clone()).collect();
-    store.mark_delivered(&ids, &now_rfc3339()).ok();
+    store.mark_delivered(&sent, &now_rfc3339()).ok();
 
     // additionalContext reaches the model but is invisible to the human. systemMessage
     // prints into the agent's own window, which is the only confirmation the user gets that
     // a keypress in another pane actually did something.
     println!(
         "{}",
-        inject::hook_output_with_notice(&context, trigger, &inject::notice(&pending))
+        inject::hook_output_with_notice(&context, trigger, &inject::notice(&sent))
     );
     Ok(())
 }

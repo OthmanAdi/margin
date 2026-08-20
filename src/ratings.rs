@@ -66,7 +66,17 @@ pub struct Rating {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Delivery {
     moment: MomentId,
+    /// When the delivery happened.
     at: String,
+    /// The `at` of the exact rating that was delivered.
+    ///
+    /// Without this, delivery is keyed by moment, so changing your mind about a moment that
+    /// was already sent is suppressed forever: the correction is filtered out as "already
+    /// delivered" and the agent keeps the stale verdict. Absent on records written before
+    /// this field existed, which are read as covering every rating up to the delivery time
+    /// and nothing after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rating_at: Option<String>,
 }
 
 /// Where the logs live for one session.
@@ -128,16 +138,22 @@ impl Store {
 
     /// Mark ratings as handed to the agent, so the next hook invocation does not repeat
     /// them. Repeating is the failure mode that poisons a context.
-    pub fn mark_delivered(&self, moments: &[MomentId], at: &str) -> Result<()> {
-        if moments.is_empty() {
+    /// Mark exactly the ratings that were handed over.
+    ///
+    /// Takes ratings rather than moments because the injected block is capped: passing every
+    /// pending moment marked ratings delivered that were never rendered, and they then never
+    /// appeared again.
+    pub fn mark_delivered(&self, ratings: &[Rating], at: &str) -> Result<()> {
+        if ratings.is_empty() {
             return Ok(());
         }
         fs::create_dir_all(&self.dir)?;
         let mut buf = String::new();
-        for m in moments {
+        for r in ratings {
             let d = Delivery {
-                moment: m.clone(),
+                moment: r.moment.clone(),
                 at: at.to_string(),
+                rating_at: Some(r.at.clone()),
             };
             buf.push_str(&serde_json::to_string(&d)?);
             buf.push('\n');
@@ -154,10 +170,23 @@ impl Store {
     /// A moment rated twice keeps only the last verdict: changing your mind should not
     /// deliver both opinions.
     pub fn pending(&self) -> Result<Vec<Rating>> {
-        let delivered: HashSet<MomentId> = read_jsonl::<Delivery>(&self.delivered_path())
-            .into_iter()
-            .map(|d| d.moment)
-            .collect();
+        // Exact revisions that went out, plus, for records written before revisions existed,
+        // the latest delivery time, which covers everything rated up to it.
+        let mut delivered: HashSet<(MomentId, String)> = HashSet::new();
+        let mut legacy: HashMap<MomentId, String> = HashMap::new();
+        for d in read_jsonl::<Delivery>(&self.delivered_path()) {
+            match d.rating_at {
+                Some(ra) => {
+                    delivered.insert((d.moment, ra));
+                }
+                None => {
+                    let slot = legacy.entry(d.moment).or_default();
+                    if d.at > *slot {
+                        *slot = d.at;
+                    }
+                }
+            }
+        }
 
         // Index alongside the vec rather than scanning it.
         //
@@ -171,7 +200,10 @@ impl Store {
         let mut seen: HashMap<MomentId, usize> = HashMap::new();
 
         for r in read_jsonl::<Rating>(&self.ratings_path()) {
-            if delivered.contains(&r.moment) {
+            if delivered.contains(&(r.moment.clone(), r.at.clone())) {
+                continue;
+            }
+            if legacy.get(&r.moment).is_some_and(|cutoff| r.at <= *cutoff) {
                 continue;
             }
             match seen.get(&r.moment) {
@@ -284,8 +316,8 @@ mod tests {
         s.record(&rating("b", Verdict::Down)).unwrap();
         assert_eq!(s.pending().unwrap().len(), 2);
 
-        let ids: Vec<_> = s.pending().unwrap().into_iter().map(|r| r.moment).collect();
-        s.mark_delivered(&ids, "2026-08-20T12:00:01Z").unwrap();
+        let sent = s.pending().unwrap();
+        s.mark_delivered(&sent, "2026-08-20T12:00:01Z").unwrap();
         assert!(
             s.pending().unwrap().is_empty(),
             "delivered ratings were re-queued"
@@ -334,6 +366,71 @@ mod tests {
         let order: Vec<&str> = pending.iter().map(|r| r.moment.entry.as_str()).collect();
         assert_eq!(order, vec!["first", "second", "third"]);
         assert_eq!(pending[0].verdict, Verdict::Down);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Delivery used to be keyed by moment, so a correction to something already sent was
+    /// filtered out forever and the agent kept the stale verdict.
+    #[test]
+    fn re_rating_an_already_delivered_moment_is_delivered_again() {
+        let root = tmp();
+        let s = Store::for_session(&root, "claude-code", "sess");
+
+        let mut first = rating("a", Verdict::Up);
+        first.at = "2026-08-20T12:00:00Z".into();
+        s.record(&first).unwrap();
+
+        let sent = s.pending().unwrap();
+        assert_eq!(sent.len(), 1);
+        s.mark_delivered(&sent, "2026-08-20T12:00:01Z").unwrap();
+        assert!(s.pending().unwrap().is_empty());
+
+        // the user changes their mind about the same moment
+        let mut correction = rating("a", Verdict::Down);
+        correction.at = "2026-08-20T12:05:00Z".into();
+        s.record(&correction).unwrap();
+
+        let pending = s.pending().unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "the correction was suppressed as already delivered"
+        );
+        assert_eq!(pending[0].verdict, Verdict::Down);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Records written before deliveries carried a revision must still suppress what they
+    /// covered, without swallowing anything rated afterwards.
+    #[test]
+    fn a_legacy_delivery_record_covers_only_what_preceded_it() {
+        let root = tmp();
+        let s = Store::for_session(&root, "claude-code", "sess");
+
+        let mut old = rating("a", Verdict::Up);
+        old.at = "2026-08-20T12:00:00Z".into();
+        s.record(&old).unwrap();
+
+        // hand-write the pre-revision shape
+        fs::create_dir_all(s.dir()).unwrap();
+        append_raw(
+            &s.dir().join("delivered.jsonl"),
+            "{\"moment\":{\"harness\":\"claude-code\",\"session_id\":\"sess\",\"entry\":\"a\",\"block\":0},\"at\":\"2026-08-20T12:00:01Z\"}\n",
+        )
+        .unwrap();
+        assert!(
+            s.pending().unwrap().is_empty(),
+            "legacy record should still suppress"
+        );
+
+        let mut later = rating("a", Verdict::Down);
+        later.at = "2026-08-20T12:09:00Z".into();
+        s.record(&later).unwrap();
+        assert_eq!(
+            s.pending().unwrap().len(),
+            1,
+            "a later rating must survive a legacy record"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
