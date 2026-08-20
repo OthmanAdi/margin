@@ -22,13 +22,13 @@ use crate::tail::Tailer;
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use notify::{RecursiveMode, Watcher};
-use ratatui::prelude::*;
-use ratatui::DefaultTerminal;
 use ratatui::layout::Margin;
+use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Wrap,
 };
+use ratatui::DefaultTerminal;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -51,10 +51,7 @@ enum Mode {
     #[default]
     Browsing,
     /// Typing the one line of why behind a rejection.
-    Noting {
-        target: usize,
-        buffer: String,
-    },
+    Noting { target: usize, buffer: String },
 }
 
 struct App {
@@ -132,8 +129,12 @@ impl App {
     }
 
     fn rate(&mut self, verdict: Verdict, note: Option<String>) {
-        let Some(index) = self.list.selected() else { return };
-        let Some(moment) = self.moments.get(index) else { return };
+        let Some(index) = self.list.selected() else {
+            return;
+        };
+        let Some(moment) = self.moments.get(index) else {
+            return;
+        };
 
         if !moment.kind.rateable() {
             self.status = Some("that one is yours, not the agent's".into());
@@ -178,7 +179,11 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".margin"));
 
-    let mut tailer = if replay { Tailer::new(&path) } else { Tailer::from_end(&path)? };
+    let mut tailer = if replay {
+        Tailer::new(&path)
+    } else {
+        Tailer::from_end(&path)?
+    };
 
     // Session id is not known until a line is parsed, so start with a placeholder and let
     // `absorb` correct it. Codex only reveals it in `session_meta`.
@@ -231,7 +236,10 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
     // Watch the parent directory, not the file: notify then holds a directory handle and
     // never contends with the harness's write handle. Events are coalesced into a single
     // FileChanged, since a full drain happens on the next tick anyway.
-    let watch_dir = path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let watch_dir = path
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let file_tx = tx.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if res.is_ok() {
@@ -342,7 +350,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('d') => app.rate(Verdict::Down, None),
         KeyCode::Char('D') => {
             if let Some(i) = app.list.selected() {
-                app.mode = Mode::Noting { target: i, buffer: String::new() };
+                app.mode = Mode::Noting {
+                    target: i,
+                    buffer: String::new(),
+                };
             }
         }
         _ => {}
@@ -374,10 +385,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let rated = app.verdicts.len();
     let line = Line::from(vec![
         Span::styled("  margin ", Style::new().fg(ACCENT).bold()),
-        Span::styled(
-            format!("{} ", app.harness.as_str()),
-            Style::new().fg(DIM),
-        ),
+        Span::styled(format!("{} ", app.harness.as_str()), Style::new().fg(DIM)),
         Span::styled(short_id(&app.session_id), Style::new().fg(DIM)),
         Span::raw("  "),
         Span::styled(
@@ -385,7 +393,10 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(DIM),
         ),
         Span::raw("  "),
-        Span::styled(format!("{rated} rated"), Style::new().fg(if rated > 0 { ACCENT } else { DIM })),
+        Span::styled(
+            format!("{rated} rated"),
+            Style::new().fg(if rated > 0 { ACCENT } else { DIM }),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -397,9 +408,15 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
         let msg = if app.parsed_lines == 0 {
             vec![
                 Line::from(""),
-                Line::from(Span::styled("  Waiting for the agent to do something.", Style::new().fg(DIM))),
+                Line::from(Span::styled(
+                    "  Waiting for the agent to do something.",
+                    Style::new().fg(DIM),
+                )),
                 Line::from(""),
-                Line::from(Span::styled(format!("  watching {}", app.path.display()), Style::new().fg(DIM))),
+                Line::from(Span::styled(
+                    format!("  watching {}", app.path.display()),
+                    Style::new().fg(DIM),
+                )),
             ]
         } else {
             vec![
@@ -426,13 +443,22 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
             let key = m.id.to_string();
             let verdict = app.verdicts.get(&key).copied();
             let mut spans = vec![
-                Span::styled(format!(" {} ", verdict_glyph(verdict)), verdict_style(verdict)),
-                Span::styled(format!("{:<9}", clock(m.at.as_deref())), Style::new().fg(DIM)),
+                Span::styled(
+                    format!(" {} ", verdict_glyph(verdict)),
+                    verdict_style(verdict),
+                ),
+                Span::styled(
+                    format!("{:<9}", clock(m.at.as_deref())),
+                    Style::new().fg(DIM),
+                ),
                 Span::styled(format!("{:<8}", m.kind.label()), kind_style(&m.kind)),
                 Span::styled(m.preview(width.max(20)), body_style(&m.kind)),
             ];
             if let Some(note) = app.notes.get(&key) {
-                spans.push(Span::styled(format!("  ({note})"), Style::new().fg(WARN).italic()));
+                spans.push(Span::styled(
+                    format!("  ({note})"),
+                    Style::new().fg(WARN).italic(),
+                ));
             }
             ListItem::new(Line::from(spans))
         })
@@ -463,7 +489,10 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
                 .track_symbol(None)
                 .thumb_style(Style::new().fg(DIM)),
             // inset by one row so the thumb sits inside the rounded border, not on it
-            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
             &mut sb,
         );
     }
@@ -581,34 +610,9 @@ fn short_id(id: &str) -> String {
 
 fn now_rfc3339() -> String {
     use time::format_description::well_known::Rfc3339;
-    time::OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn subject_labels_separate_tools_from_prose() {
-        assert_eq!(subject_of(&MomentKind::Said { text: "x".into() }), "said");
-        assert_eq!(
-            subject_of(&MomentKind::Did {
-                tool: "Bash".into(),
-                input: "ls".into(),
-                output: None,
-                tool_use_id: None
-            }),
-            "did:Bash"
-        );
-        assert_eq!(subject_of(&MomentKind::Thought { text: None, bytes: 0 }), "thought");
-    }
-
-    #[test]
-    fn clock_shortens_a_timestamp_and_survives_a_missing_one() {
-        assert_eq!(clock(Some("2026-08-20T12:04:19.412Z")), "12:04:19");
-        assert_eq!(clock(None), "--:--:--");
-        assert_eq!(clock(Some("garbage")), "--:--:--");
-    }
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }
 
 /// Build a representative screen and draw it, for the README image.
@@ -626,12 +630,21 @@ pub fn draw_demo(f: &mut Frame) {
 
     let mut verdicts = HashMap::new();
     let mut notes = HashMap::new();
-    if let Some(m) = moments.iter().find(|m| matches!(m.kind, MomentKind::Said { .. })) {
+    if let Some(m) = moments
+        .iter()
+        .find(|m| matches!(m.kind, MomentKind::Said { .. }))
+    {
         verdicts.insert(m.id.to_string(), Verdict::Up);
     }
-    if let Some(m) = moments.iter().find(|m| matches!(m.kind, MomentKind::Did { .. })) {
+    if let Some(m) = moments
+        .iter()
+        .find(|m| matches!(m.kind, MomentKind::Did { .. }))
+    {
         verdicts.insert(m.id.to_string(), Verdict::Down);
-        notes.insert(m.id.to_string(), "wrong file, use the debug log".to_string());
+        notes.insert(
+            m.id.to_string(),
+            "wrong file, use the debug log".to_string(),
+        );
     }
 
     let mut list = ListState::default();
@@ -665,19 +678,77 @@ fn demo_extra_moments(from: usize) -> Vec<Moment> {
         kind,
     };
     vec![
-        mk(0, "12:04:31", MomentKind::Thought { text: None, bytes: 4524 }),
-        mk(1, "12:04:38", MomentKind::Said {
-            text: "0 of 71 thinking blocks have readable text. It is signature only.".into(),
-        }),
-        mk(2, "12:04:52", MomentKind::Did {
-            tool: "Read".into(),
-            input: "src/harness/claude_code.rs".into(),
-            output: Some("ok".into()),
-            tool_use_id: Some("toolu_02".into()),
-        }),
-        mk(3, "12:05:03", MomentKind::Thought { text: None, bytes: 3180 }),
-        mk(4, "12:05:11", MomentKind::Said {
-            text: "Switching to the streaming interface, where the text is available.".into(),
-        }),
+        mk(
+            0,
+            "12:04:31",
+            MomentKind::Thought {
+                text: None,
+                bytes: 4524,
+            },
+        ),
+        mk(
+            1,
+            "12:04:38",
+            MomentKind::Said {
+                text: "0 of 71 thinking blocks have readable text. It is signature only.".into(),
+            },
+        ),
+        mk(
+            2,
+            "12:04:52",
+            MomentKind::Did {
+                tool: "Read".into(),
+                input: "src/harness/claude_code.rs".into(),
+                output: Some("ok".into()),
+                tool_use_id: Some("toolu_02".into()),
+            },
+        ),
+        mk(
+            3,
+            "12:05:03",
+            MomentKind::Thought {
+                text: None,
+                bytes: 3180,
+            },
+        ),
+        mk(
+            4,
+            "12:05:11",
+            MomentKind::Said {
+                text: "Switching to the streaming interface, where the text is available.".into(),
+            },
+        ),
     ]
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subject_labels_separate_tools_from_prose() {
+        assert_eq!(subject_of(&MomentKind::Said { text: "x".into() }), "said");
+        assert_eq!(
+            subject_of(&MomentKind::Did {
+                tool: "Bash".into(),
+                input: "ls".into(),
+                output: None,
+                tool_use_id: None
+            }),
+            "did:Bash"
+        );
+        assert_eq!(
+            subject_of(&MomentKind::Thought {
+                text: None,
+                bytes: 0
+            }),
+            "thought"
+        );
+    }
+
+    #[test]
+    fn clock_shortens_a_timestamp_and_survives_a_missing_one() {
+        assert_eq!(clock(Some("2026-08-20T12:04:19.412Z")), "12:04:19");
+        assert_eq!(clock(None), "--:--:--");
+        assert_eq!(clock(Some("garbage")), "--:--:--");
+    }
 }

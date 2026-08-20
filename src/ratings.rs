@@ -78,7 +78,9 @@ pub struct Store {
 impl Store {
     /// `~/.margin/<harness>/<session-id>/`
     pub fn for_session(root: &Path, harness: &str, session_id: &str) -> Self {
-        Self { dir: root.join(harness).join(sanitise(session_id)) }
+        Self {
+            dir: root.join(harness).join(sanitise(session_id)),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -110,7 +112,10 @@ impl Store {
         fs::create_dir_all(&self.dir)?;
         let mut buf = String::new();
         for m in moments {
-            let d = Delivery { moment: m.clone(), at: at.to_string() };
+            let d = Delivery {
+                moment: m.clone(),
+                at: at.to_string(),
+            };
             buf.push_str(&serde_json::to_string(&d)?);
             buf.push('\n');
         }
@@ -126,8 +131,10 @@ impl Store {
     /// A moment rated twice keeps only the last verdict: changing your mind should not
     /// deliver both opinions.
     pub fn pending(&self) -> Result<Vec<Rating>> {
-        let delivered: HashSet<MomentId> =
-            read_jsonl::<Delivery>(&self.delivered_path()).into_iter().map(|d| d.moment).collect();
+        let delivered: HashSet<MomentId> = read_jsonl::<Delivery>(&self.delivered_path())
+            .into_iter()
+            .map(|d| d.moment)
+            .collect();
 
         let mut latest: Vec<Rating> = Vec::new();
         for r in read_jsonl::<Rating>(&self.ratings_path()) {
@@ -164,7 +171,9 @@ fn append_raw(path: &Path, data: &str) -> Result<()> {
 }
 
 fn read_jsonl<T: for<'de> Deserialize<'de>>(path: &Path) -> Vec<T> {
-    let Ok(text) = fs::read_to_string(path) else { return Vec::new() };
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
     text.lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<T>(l).ok())
@@ -175,7 +184,13 @@ fn read_jsonl<T: for<'de> Deserialize<'de>>(path: &Path) -> Vec<T> {
 /// escape the store directory.
 fn sanitise(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -233,7 +248,10 @@ mod tests {
 
         let ids: Vec<_> = s.pending().unwrap().into_iter().map(|r| r.moment).collect();
         s.mark_delivered(&ids, "2026-08-20T12:00:01Z").unwrap();
-        assert!(s.pending().unwrap().is_empty(), "delivered ratings were re-queued");
+        assert!(
+            s.pending().unwrap().is_empty(),
+            "delivered ratings were re-queued"
+        );
 
         // a later rating still gets through
         s.record(&rating("c", Verdict::Up)).unwrap();
@@ -278,7 +296,11 @@ mod tests {
     fn session_ids_cannot_escape_the_store_directory() {
         let root = tmp();
         let s = Store::for_session(&root, "claude-code", "../../etc/passwd");
-        assert!(s.dir().starts_with(&root), "path traversal via session id: {:?}", s.dir());
+        assert!(
+            s.dir().starts_with(&root),
+            "path traversal via session id: {:?}",
+            s.dir()
+        );
         fs::remove_dir_all(&root).ok();
     }
 }

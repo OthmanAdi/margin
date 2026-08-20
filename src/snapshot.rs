@@ -104,10 +104,9 @@ fn buffer_to_svg(buf: &Buffer, cols: u16, rows: u16, title: &str) -> String {
             while x < cols && buf[(x, y)].bg == bg {
                 x += 1;
             }
-            let _ = write!(
+            let _ = writeln!(
                 s,
-                r##"<rect x="{px:.1}" y="{py:.1}" width="{pw:.1}" height="{CELL_H:.1}" fill="{fill}"/>
-"##,
+                r##"<rect x="{px:.1}" y="{py:.1}" width="{pw:.1}" height="{CELL_H:.1}" fill="{fill}"/>"##,
                 px = PAD + start as f32 * CELL_W,
                 py = PAD + CHROME + y as f32 * CELL_H,
                 pw = (x - start) as f32 * CELL_W,
@@ -132,13 +131,20 @@ fn buffer_to_svg(buf: &Buffer, cols: u16, rows: u16, title: &str) -> String {
             if run.trim().is_empty() {
                 continue;
             }
-            let weight = if modifier.contains(Modifier::BOLD) { " font-weight=\"600\"" } else { "" };
-            let italic = if modifier.contains(Modifier::ITALIC) { " font-style=\"italic\"" } else { "" };
+            let weight = if modifier.contains(Modifier::BOLD) {
+                " font-weight=\"600\""
+            } else {
+                ""
+            };
+            let italic = if modifier.contains(Modifier::ITALIC) {
+                " font-style=\"italic\""
+            } else {
+                ""
+            };
             let fill = if fg == Color::Reset { FG } else { hex(fg) };
-            let _ = write!(
+            let _ = writeln!(
                 s,
-                r##"<text x="{px:.1}" y="{py:.1}" fill="{fill}"{weight}{italic} xml:space="preserve">{}</text>
-"##,
+                r##"<text x="{px:.1}" y="{py:.1}" fill="{fill}"{weight}{italic} xml:space="preserve">{}</text>"##,
                 escape(&run),
                 px = PAD + start as f32 * CELL_W,
                 py = PAD + CHROME + y as f32 * CELL_H + 13.0,
@@ -151,7 +157,9 @@ fn buffer_to_svg(buf: &Buffer, cols: u16, rows: u16, title: &str) -> String {
 }
 
 fn escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// The scene the README shows: a real session, mid-run, with one approval and one rejection
@@ -159,33 +167,6 @@ fn escape(s: &str) -> String {
 #[allow(dead_code)]
 pub fn demo_harness() -> Harness {
     Harness::ClaudeCode
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::widgets::Paragraph;
-
-    #[test]
-    fn produces_valid_looking_svg_with_the_rendered_text_in_it() {
-        let dir = std::env::temp_dir().join(format!("margin-svg-{}", std::process::id()));
-        let path = dir.join("out.svg");
-        write_svg(&path, 40, 3, "margin", |f| {
-            f.render_widget(Paragraph::new("hello margin"), f.area());
-        })
-        .unwrap();
-
-        let svg = std::fs::read_to_string(&path).unwrap();
-        assert!(svg.starts_with("<svg"));
-        assert!(svg.ends_with("</svg>\n"));
-        assert!(svg.contains("hello margin"), "rendered text should appear in the SVG");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn escapes_markup_so_a_tool_call_cannot_break_the_document() {
-        assert_eq!(escape("<a> & </a>"), "&lt;a&gt; &amp; &lt;/a&gt;");
-    }
 }
 
 /// The injected block, rendered for the README.
@@ -202,7 +183,9 @@ pub fn signal_text() -> String {
             verdict: Verdict::Up,
             note: None,
             at: "2026-08-20T12:04:11Z".into(),
-            preview: Some("I'll check the transcript format first before writing the parser.".into()),
+            preview: Some(
+                "I'll check the transcript format first before writing the parser.".into(),
+            ),
             subject: Some("said".into()),
         },
         Rating {
@@ -265,7 +248,11 @@ fn wrap_to(text: &str, width: usize) -> Vec<String> {
         let indent: String = para.chars().take_while(|c| *c == ' ').collect();
         let mut line = String::new();
         for word in para.split_whitespace() {
-            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            let candidate = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
             if candidate.chars().count() + indent.len() > width && !line.is_empty() {
                 out.push(format!("{indent}{line}"));
                 line = word.to_string();
@@ -278,4 +265,33 @@ fn wrap_to(text: &str, width: usize) -> Vec<String> {
         }
     }
     out
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::widgets::Paragraph;
+
+    #[test]
+    fn produces_valid_looking_svg_with_the_rendered_text_in_it() {
+        let dir = std::env::temp_dir().join(format!("margin-svg-{}", std::process::id()));
+        let path = dir.join("out.svg");
+        write_svg(&path, 40, 3, "margin", |f| {
+            f.render_widget(Paragraph::new("hello margin"), f.area());
+        })
+        .unwrap();
+
+        let svg = std::fs::read_to_string(&path).unwrap();
+        assert!(svg.starts_with("<svg"));
+        assert!(svg.ends_with("</svg>\n"));
+        assert!(
+            svg.contains("hello margin"),
+            "rendered text should appear in the SVG"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn escapes_markup_so_a_tool_call_cannot_break_the_document() {
+        assert_eq!(escape("<a> & </a>"), "&lt;a&gt; &amp; &lt;/a&gt;");
+    }
 }

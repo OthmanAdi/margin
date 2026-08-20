@@ -49,7 +49,13 @@ pub fn home() -> Result<PathBuf> {
 pub fn claude_project_slug(cwd: &Path) -> String {
     let s = cwd.to_string_lossy();
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -77,7 +83,11 @@ pub fn claude_sessions(home: &Path, cwd: Option<&Path>) -> Vec<Session> {
                 continue;
             }
             if let Some(modified) = mtime(&path) {
-                out.push(Session { harness: Harness::ClaudeCode, path, modified });
+                out.push(Session {
+                    harness: Harness::ClaudeCode,
+                    path,
+                    modified,
+                });
             }
         }
     }
@@ -100,7 +110,11 @@ pub fn codex_sessions(home: &Path) -> Vec<Session> {
                         continue;
                     }
                     if let Some(modified) = mtime(&path) {
-                        out.push(Session { harness: Harness::Codex, path, modified });
+                        out.push(Session {
+                            harness: Harness::Codex,
+                            path,
+                            modified,
+                        });
                     }
                 }
             }
@@ -120,7 +134,9 @@ pub fn newest_for_cwd(home: &Path, cwd: &Path) -> Option<Session> {
 }
 
 fn read_dir(path: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(path) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
     entries.flatten().map(|e| e.path()).collect()
 }
 

@@ -47,14 +47,28 @@ pub struct MomentId {
 }
 
 impl MomentId {
-    pub fn new(harness: Harness, session_id: impl Into<String>, entry: impl Into<String>, block: u16) -> Self {
-        Self { harness: harness.as_str().to_string(), session_id: session_id.into(), entry: entry.into(), block }
+    pub fn new(
+        harness: Harness,
+        session_id: impl Into<String>,
+        entry: impl Into<String>,
+        block: u16,
+    ) -> Self {
+        Self {
+            harness: harness.as_str().to_string(),
+            session_id: session_id.into(),
+            entry: entry.into(),
+            block,
+        }
     }
 }
 
 impl fmt::Display for MomentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}/{}#{}", self.harness, self.session_id, self.entry, self.block)
+        write!(
+            f,
+            "{}/{}/{}#{}",
+            self.harness, self.session_id, self.entry, self.block
+        )
     }
 }
 
@@ -169,7 +183,9 @@ mod tests {
             id: MomentId::new(Harness::ClaudeCode, "s", "e", 0),
             seq: 0,
             at: None,
-            kind: MomentKind::Said { text: text.to_string() },
+            kind: MomentKind::Said {
+                text: text.to_string(),
+            },
         }
     }
 
@@ -203,7 +219,10 @@ mod tests {
             id: MomentId::new(Harness::ClaudeCode, "s", "e", 0),
             seq: 0,
             at: None,
-            kind: MomentKind::Thought { text: None, bytes: 4524 },
+            kind: MomentKind::Thought {
+                text: None,
+                bytes: 4524,
+            },
         };
         assert_eq!(m.preview(80), "<not persisted, 4524 B>");
     }
@@ -212,7 +231,11 @@ mod tests {
     fn the_human_turn_is_not_rateable() {
         assert!(!MomentKind::Asked { text: "hi".into() }.rateable());
         assert!(MomentKind::Said { text: "hi".into() }.rateable());
-        assert!(MomentKind::Thought { text: None, bytes: 0 }.rateable());
+        assert!(MomentKind::Thought {
+            text: None,
+            bytes: 0
+        }
+        .rateable());
     }
 
     #[test]

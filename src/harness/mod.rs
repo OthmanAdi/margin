@@ -27,7 +27,9 @@ pub fn detect(input: &str) -> Option<Harness> {
         if line.is_empty() {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         if v.get("payload").is_some() {
             return Some(Harness::Codex);
         }
@@ -45,7 +47,9 @@ mod tests {
     #[test]
     fn detects_each_harness_from_content_alone() {
         assert_eq!(
-            detect(include_str!("../../fixtures/claude-code/session-basic.jsonl")),
+            detect(include_str!(
+                "../../fixtures/claude-code/session-basic.jsonl"
+            )),
             Some(Harness::ClaudeCode)
         );
         assert_eq!(

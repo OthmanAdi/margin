@@ -30,7 +30,10 @@ pub struct Tailer {
 
 impl Tailer {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), offset: 0 }
+        Self {
+            path: path.into(),
+            offset: 0,
+        }
     }
 
     /// Start at the end, for attaching to a session already in progress without replaying
@@ -62,8 +65,8 @@ impl Tailer {
             return Ok(Vec::new());
         }
 
-        let file = File::open(&self.path)
-            .with_context(|| format!("opening {}", self.path.display()))?;
+        let file =
+            File::open(&self.path).with_context(|| format!("opening {}", self.path.display()))?;
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(self.offset))?;
 
@@ -125,13 +128,21 @@ mod tests {
     }
 
     fn append(path: &Path, s: &str) {
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
         f.write_all(s.as_bytes()).unwrap();
         f.flush().unwrap();
     }
 
     fn append_bytes(path: &Path, b: &[u8]) {
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
         f.write_all(b).unwrap();
         f.flush().unwrap();
     }
@@ -144,7 +155,10 @@ mod tests {
 
         append(&p, "{\"a\":1}\n{\"a\":2}\n");
         assert_eq!(t.poll().unwrap(), vec!["{\"a\":1}", "{\"a\":2}"]);
-        assert!(t.poll().unwrap().is_empty(), "a second poll re-read old lines");
+        assert!(
+            t.poll().unwrap().is_empty(),
+            "a second poll re-read old lines"
+        );
 
         append(&p, "{\"a\":3}\n");
         assert_eq!(t.poll().unwrap(), vec!["{\"a\":3}"]);
@@ -159,10 +173,18 @@ mod tests {
         let mut t = Tailer::new(&p);
 
         append(&p, "{\"a\":1}\n{\"a\":");
-        assert_eq!(t.poll().unwrap(), vec!["{\"a\":1}"], "torn tail must not be emitted");
+        assert_eq!(
+            t.poll().unwrap(),
+            vec!["{\"a\":1}"],
+            "torn tail must not be emitted"
+        );
 
         append(&p, "2}\n");
-        assert_eq!(t.poll().unwrap(), vec!["{\"a\":2}"], "completed line must arrive whole");
+        assert_eq!(
+            t.poll().unwrap(),
+            vec!["{\"a\":2}"],
+            "completed line must arrive whole"
+        );
         std::fs::remove_file(&p).ok();
     }
 
@@ -202,7 +224,10 @@ mod tests {
         let p = tmp_file("from-end.jsonl");
         std::fs::write(&p, "{\"old\":1}\n").unwrap();
         let mut t = Tailer::from_end(&p).unwrap();
-        assert!(t.poll().unwrap().is_empty(), "existing lines should not be replayed");
+        assert!(
+            t.poll().unwrap().is_empty(),
+            "existing lines should not be replayed"
+        );
 
         append(&p, "{\"new\":1}\n");
         assert_eq!(t.poll().unwrap(), vec!["{\"new\":1}"]);
@@ -218,10 +243,17 @@ mod tests {
         // "é" is the two bytes 0xC3 0xA9. Write them in separate appends, with the newline
         // only in the second, so the first poll sees a genuinely invalid UTF-8 tail.
         append_bytes(&p, b"{\"t\":\"caf\xC3");
-        assert!(t.poll().unwrap().is_empty(), "an incomplete line must not be emitted");
+        assert!(
+            t.poll().unwrap().is_empty(),
+            "an incomplete line must not be emitted"
+        );
 
         append_bytes(&p, b"\xA9\"}\n");
-        assert_eq!(t.poll().unwrap(), vec!["{\"t\":\"caf\u{00E9}\"}"], "the character must reassemble");
+        assert_eq!(
+            t.poll().unwrap(),
+            vec!["{\"t\":\"caf\u{00E9}\"}"],
+            "the character must reassemble"
+        );
         std::fs::remove_file(&p).ok();
     }
 
@@ -241,7 +273,12 @@ mod tests {
             seen.extend(t.poll().unwrap());
         }
 
-        assert_eq!(seen.len(), 20, "expected exactly one line per record, got {}", seen.len());
+        assert_eq!(
+            seen.len(),
+            20,
+            "expected exactly one line per record, got {}",
+            seen.len()
+        );
         for (i, line) in seen.iter().enumerate() {
             assert_eq!(line, &format!("{{\"n\":{i},\"half\":true}}"));
         }

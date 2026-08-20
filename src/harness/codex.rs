@@ -39,7 +39,9 @@ pub fn reasoning_health(input: &str) -> ReasoningHealth {
     let mut summaries = 0usize;
     let mut encrypted = 0usize;
     for line in input.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
         match payload_type(&v) {
             Some("agent_reasoning") => summaries += 1,
             Some("reasoning") => encrypted += 1,
@@ -63,10 +65,17 @@ pub fn parse(input: &str) -> Vec<Moment> {
         if line.is_empty() {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
 
-        let at = v.get("timestamp").and_then(Value::as_str).map(str::to_string);
-        let Some(payload) = v.get("payload") else { continue };
+        let at = v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let Some(payload) = v.get("payload") else {
+            continue;
+        };
 
         // session_meta is typed at the entry level, not inside payload, unlike every other
         // event. Checking only payload.type silently loses the session id, which then
@@ -82,7 +91,9 @@ pub fn parse(input: &str) -> Vec<Moment> {
             continue;
         }
 
-        let Some(ptype) = payload.get("type").and_then(Value::as_str) else { continue };
+        let Some(ptype) = payload.get("type").and_then(Value::as_str) else {
+            continue;
+        };
 
         // Codex events carry no per-event id, so identity is the line number. Rollouts are
         // append-only and never rewritten, which is what makes that safe here.
@@ -90,11 +101,17 @@ pub fn parse(input: &str) -> Vec<Moment> {
 
         let kind = match ptype {
             "agent_reasoning" => {
-                let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
+                let text = payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 if text.trim().is_empty() {
                     continue;
                 }
-                MomentKind::Thought { bytes: text.len(), text: Some(text.to_string()) }
+                MomentKind::Thought {
+                    bytes: text.len(),
+                    text: Some(text.to_string()),
+                }
             }
             "agent_message" => {
                 let text = payload
@@ -105,7 +122,9 @@ pub fn parse(input: &str) -> Vec<Moment> {
                 if text.trim().is_empty() {
                     continue;
                 }
-                MomentKind::Said { text: text.to_string() }
+                MomentKind::Said {
+                    text: text.to_string(),
+                }
             }
             "user_message" => {
                 let text = payload
@@ -116,7 +135,9 @@ pub fn parse(input: &str) -> Vec<Moment> {
                 if text.trim().is_empty() {
                     continue;
                 }
-                MomentKind::Asked { text: text.to_string() }
+                MomentKind::Asked {
+                    text: text.to_string(),
+                }
             }
             "function_call" | "custom_tool_call" => {
                 let tool = payload
@@ -134,13 +155,21 @@ pub fn parse(input: &str) -> Vec<Moment> {
                     tool,
                     input,
                     output: None,
-                    tool_use_id: payload.get("call_id").and_then(Value::as_str).map(str::to_string),
+                    tool_use_id: payload
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 }
             }
             _ => continue,
         };
 
-        out.push(Moment { id: MomentId::new(Harness::Codex, &session_id, entry, 0), seq, at, kind });
+        out.push(Moment {
+            id: MomentId::new(Harness::Codex, &session_id, entry, 0),
+            seq,
+            at,
+            kind,
+        });
         seq += 1;
     }
 
@@ -167,8 +196,14 @@ mod tests {
 
     #[test]
     fn parses_both_real_fixtures() {
-        assert!(!parse(BASIC).is_empty(), "basic fixture produced no moments");
-        assert!(!parse(REASONING).is_empty(), "reasoning fixture produced no moments");
+        assert!(
+            !parse(BASIC).is_empty(),
+            "basic fixture produced no moments"
+        );
+        assert!(
+            !parse(REASONING).is_empty(),
+            "reasoning fixture produced no moments"
+        );
     }
 
     /// Codex does what Claude Code cannot: readable reasoning.
@@ -182,7 +217,11 @@ mod tests {
             })
             .collect();
 
-        assert!(thoughts.len() > 50, "expected many reasoning summaries, got {}", thoughts.len());
+        assert!(
+            thoughts.len() > 50,
+            "expected many reasoning summaries, got {}",
+            thoughts.len()
+        );
         assert!(thoughts.iter().all(|t| !t.trim().is_empty()));
     }
 
@@ -195,7 +234,10 @@ mod tests {
         assert_eq!(reasoning_health(BASIC), ReasoningHealth::NotEmitted);
         // summaries off, but the model still reasoned
         let suppressed = r#"{"timestamp":"t","type":"response_item","payload":{"type":"reasoning","encrypted_content":"x"}}"#;
-        assert_eq!(reasoning_health(suppressed), ReasoningHealth::SuppressedBySetting);
+        assert_eq!(
+            reasoning_health(suppressed),
+            ReasoningHealth::SuppressedBySetting
+        );
     }
 
     #[test]

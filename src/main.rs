@@ -88,8 +88,8 @@ fn watch(session: Option<PathBuf>, replay: bool) -> Result<()> {
 
     let (path, harness_kind) = match session {
         Some(p) => {
-            let text = std::fs::read_to_string(&p)
-                .with_context(|| format!("reading {}", p.display()))?;
+            let text =
+                std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
             let h = harness::detect(&text).context(
                 "could not tell which harness wrote this file; it does not look like a \
                  Claude Code or Codex transcript",
@@ -271,5 +271,7 @@ fn install(write: bool, settings: Option<PathBuf>) -> Result<()> {
 
 fn now_rfc3339() -> String {
     use time::format_description::well_known::Rfc3339;
-    time::OffsetDateTime::now_utc().format(&Rfc3339).unwrap_or_default()
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }

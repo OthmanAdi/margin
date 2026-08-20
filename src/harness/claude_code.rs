@@ -35,13 +35,20 @@ pub fn parse(input: &str) -> Vec<Moment> {
         if line.is_empty() {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         parse_entry(&v, &mut out, &mut seq, &mut pending);
     }
     out
 }
 
-fn parse_entry(v: &Value, out: &mut Vec<Moment>, seq: &mut usize, pending: &mut Vec<(String, usize)>) {
+fn parse_entry(
+    v: &Value,
+    out: &mut Vec<Moment>,
+    seq: &mut usize,
+    pending: &mut Vec<(String, usize)>,
+) {
     let entry_type = v.get("type").and_then(Value::as_str).unwrap_or_default();
     if !matches!(entry_type, "assistant" | "user") {
         return; // metadata: mode, ai-title, attachment, file-history-*, queue-operation
@@ -53,45 +60,95 @@ fn parse_entry(v: &Value, out: &mut Vec<Moment>, seq: &mut usize, pending: &mut 
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let uuid = v.get("uuid").and_then(Value::as_str).unwrap_or("unknown");
-    let at = v.get("timestamp").and_then(Value::as_str).map(str::to_string);
+    let at = v
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
-    let Some(message) = v.get("message") else { return };
-    let role = message.get("role").and_then(Value::as_str).unwrap_or(entry_type);
+    let Some(message) = v.get("message") else {
+        return;
+    };
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or(entry_type);
 
     match message.get("content") {
         // A plain-string content is how a simple user turn is written.
         Some(Value::String(text)) => {
             if role == "user" && !text.trim().is_empty() {
-                push(out, seq, session_id, uuid, 0, at.clone(), MomentKind::Asked { text: text.clone() });
+                push(
+                    out,
+                    seq,
+                    session_id,
+                    uuid,
+                    0,
+                    at.clone(),
+                    MomentKind::Asked { text: text.clone() },
+                );
             }
         }
         Some(Value::Array(blocks)) => {
             for (i, block) in blocks.iter().enumerate() {
                 let block_idx = i as u16;
-                match block.get("type").and_then(Value::as_str).unwrap_or_default() {
+                match block
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                {
                     "thinking" => {
-                        let text = block.get("thinking").and_then(Value::as_str).unwrap_or_default();
+                        let text = block
+                            .get("thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         // Size of the signature is the only honest measure of how much
                         // thinking happened, since the text itself is never written.
-                        let bytes = block.get("signature").and_then(Value::as_str).map_or(0, str::len);
-                        let text = if text.trim().is_empty() { None } else { Some(text.to_string()) };
-                        push(out, seq, session_id, uuid, block_idx, at.clone(), MomentKind::Thought { text, bytes });
+                        let bytes = block
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .map_or(0, str::len);
+                        let text = if text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(text.to_string())
+                        };
+                        push(
+                            out,
+                            seq,
+                            session_id,
+                            uuid,
+                            block_idx,
+                            at.clone(),
+                            MomentKind::Thought { text, bytes },
+                        );
                     }
                     "text" => {
-                        let text = block.get("text").and_then(Value::as_str).unwrap_or_default();
+                        let text = block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
                         if text.trim().is_empty() {
                             continue;
                         }
                         let kind = if role == "user" {
-                            MomentKind::Asked { text: text.to_string() }
+                            MomentKind::Asked {
+                                text: text.to_string(),
+                            }
                         } else {
-                            MomentKind::Said { text: text.to_string() }
+                            MomentKind::Said {
+                                text: text.to_string(),
+                            }
                         };
                         push(out, seq, session_id, uuid, block_idx, at.clone(), kind);
                     }
                     "tool_use" => {
-                        let tool = block.get("name").and_then(Value::as_str).unwrap_or("tool").to_string();
-                        let tool_use_id = block.get("id").and_then(Value::as_str).map(str::to_string);
+                        let tool = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string();
+                        let tool_use_id =
+                            block.get("id").and_then(Value::as_str).map(str::to_string);
                         let input = summarise_tool_input(block.get("input"));
                         if let Some(id) = &tool_use_id {
                             pending.push((id.clone(), out.len()));
@@ -103,7 +160,12 @@ fn parse_entry(v: &Value, out: &mut Vec<Moment>, seq: &mut usize, pending: &mut 
                             uuid,
                             block_idx,
                             at.clone(),
-                            MomentKind::Did { tool, input, output: None, tool_use_id },
+                            MomentKind::Did {
+                                tool,
+                                input,
+                                output: None,
+                                tool_use_id,
+                            },
                         );
                     }
                     "tool_result" => {
@@ -152,7 +214,16 @@ fn take_pending(pending: &mut Vec<(String, usize)>, id: &str) -> Option<usize> {
 /// reads `Bash(echo hello)` rather than `Bash({"command":"echo hello","description":…})`.
 fn summarise_tool_input(input: Option<&Value>) -> String {
     let Some(v) = input else { return String::new() };
-    for key in ["command", "pattern", "file_path", "path", "query", "prompt", "url", "description"] {
+    for key in [
+        "command",
+        "pattern",
+        "file_path",
+        "path",
+        "query",
+        "prompt",
+        "url",
+        "description",
+    ] {
         if let Some(s) = v.get(key).and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 return s.to_string();
@@ -187,7 +258,10 @@ mod tests {
     #[test]
     fn parses_the_real_fixture() {
         let moments = parse(FIXTURE);
-        assert!(!moments.is_empty(), "fixture produced no moments; the format has drifted");
+        assert!(
+            !moments.is_empty(),
+            "fixture produced no moments; the format has drifted"
+        );
     }
 
     /// The finding this whole project had to design around. If this test ever starts
@@ -203,10 +277,19 @@ mod tests {
             })
             .collect();
 
-        assert!(!thoughts.is_empty(), "fixture should contain thinking blocks");
+        assert!(
+            !thoughts.is_empty(),
+            "fixture should contain thinking blocks"
+        );
         for (text, bytes) in &thoughts {
-            assert!(text.is_none(), "thinking text is unexpectedly readable: {text:?}");
-            assert!(*bytes > 0, "a thinking block should still report signature size");
+            assert!(
+                text.is_none(),
+                "thinking text is unexpectedly readable: {text:?}"
+            );
+            assert!(
+                *bytes > 0,
+                "a thinking block should still report signature size"
+            );
         }
     }
 
@@ -219,13 +302,22 @@ mod tests {
             .collect();
         assert_eq!(dids.len(), 1, "fixture has exactly one tool call");
 
-        let MomentKind::Did { tool, input, output, tool_use_id } = &dids[0].kind else {
+        let MomentKind::Did {
+            tool,
+            input,
+            output,
+            tool_use_id,
+        } = &dids[0].kind
+        else {
             unreachable!()
         };
         assert_eq!(tool, "Bash");
         assert_eq!(input, "echo hello");
         assert!(tool_use_id.as_deref().unwrap().starts_with("toolu_"));
-        assert!(output.as_deref().unwrap().contains("hello"), "result should be attached");
+        assert!(
+            output.as_deref().unwrap().contains("hello"),
+            "result should be attached"
+        );
     }
 
     #[test]
@@ -234,7 +326,10 @@ mod tests {
         let b = parse(FIXTURE);
         assert_eq!(a.len(), b.len());
         for (x, y) in a.iter().zip(b.iter()) {
-            assert_eq!(x.id, y.id, "the same transcript must yield the same anchors");
+            assert_eq!(
+                x.id, y.id,
+                "the same transcript must yield the same anchors"
+            );
         }
         let mut ids: Vec<_> = a.iter().map(|m| m.id.to_string()).collect();
         let before = ids.len();

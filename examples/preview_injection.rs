@@ -12,7 +12,9 @@ fn main() {
             verdict: Verdict::Up,
             note: None,
             at: "2026-08-20T12:04:11Z".into(),
-            preview: Some("I'll check the transcript format first before writing the parser.".into()),
+            preview: Some(
+                "I'll check the transcript format first before writing the parser.".into(),
+            ),
             subject: Some("said".into()),
         },
         Rating {
