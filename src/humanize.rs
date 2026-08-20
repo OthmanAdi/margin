@@ -41,6 +41,8 @@ pub fn tool(name: &str, input: &str) -> String {
         "WebSearch" => format!("web search {arg}"),
         "TodoWrite" => "updated the todo list".to_string(),
         "Task" | "Agent" => format!("delegated: {arg}"),
+        // A workflow's input is a whole script. Its name is the only part worth a row.
+        "Workflow" => format!("workflow: {}", workflow_name(arg)),
         "Bash" | "PowerShell" | "Shell" => command(arg),
         other if arg.is_empty() => other.to_lowercase(),
         other => format!("{}: {arg}", other.to_lowercase()),
@@ -141,10 +143,25 @@ fn summarise_segment(segment: &str) -> String {
     }
 
     // Otherwise: the program, its subcommand if it has one, and the first real argument.
+    //
+    // Flags are skipped, and so is the value of a PowerShell-style flag. Skipping only the
+    // flag itself produced rows like "Get-Process margin SilentlyContinue", where the tail
+    // is the argument to -ErrorAction and reads as though it were a subject. A single-dash
+    // word takes a following value; a double-dash one usually does not.
     let mut parts = vec![prog_short.to_string()];
-    for w in rest.iter().take(6) {
-        if w.starts_with('-') {
-            continue; // flags rarely identify a command to a human
+    let mut skip_next = false;
+    for w in rest.iter().take(10) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if let Some(flag) = w.strip_prefix('-') {
+            let takes_value = !flag.starts_with('-') && !w.contains('=');
+            // Some flags carry the subject and some carry configuration. `-Name margin` is
+            // what the command is about; `-ErrorAction SilentlyContinue` is not, and
+            // rendering its value made rows read as though SilentlyContinue were the target.
+            skip_next = takes_value && !carries_subject(flag);
+            continue;
         }
         parts.push(short_path(w).to_string());
         if parts.len() >= 3 {
@@ -171,6 +188,35 @@ pub fn short_path(p: &str) -> &str {
         Some(i) if i < trimmed.len() => &trimmed[i..],
         _ => trimmed,
     }
+}
+
+/// Whether a flag's value names what the command acts on.
+///
+/// Deliberately a short list rather than a guess. Everything not named here is treated as
+/// configuration and its value is dropped, which is the right default: a wrong subject is
+/// more misleading than a missing one.
+fn carries_subject(flag: &str) -> bool {
+    let f = flag.trim_start_matches('-').to_ascii_lowercase();
+    matches!(
+        f.as_str(),
+        "name" | "path" | "literalpath" | "filepath" | "file" | "f" | "id" | "target" | "out"
+    )
+}
+
+/// The `name:` out of a workflow script, since the input is the entire script text.
+fn workflow_name(arg: &str) -> String {
+    for key in [r#"name: '"#, r#"name: ""#, r#""name":""#, r#""name": ""#] {
+        if let Some(rest) = arg.split(key).nth(1) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| *c != '\'' && *c != '"')
+                .collect();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "(unnamed)".to_string()
 }
 
 fn host_of(url: &str) -> &str {
@@ -301,6 +347,33 @@ mod tests {
         );
         assert_eq!(tool("Edit", "src/main.rs"), "edited src/main.rs");
         assert_eq!(tool("Write", "notes.md"), "wrote notes.md");
+    }
+
+    /// A flag value used to be shown as though it were the command's subject, producing
+    /// rows like "Get-Process margin SilentlyContinue".
+    #[test]
+    fn a_flag_value_is_not_mistaken_for_a_subject() {
+        assert_eq!(
+            tool(
+                "PowerShell",
+                "Get-Process -Name margin -ErrorAction SilentlyContinue"
+            ),
+            "Get-Process margin"
+        );
+        // double-dash flags do not consume the next word
+        assert_eq!(
+            tool("Bash", "cargo test --quiet humanize"),
+            "cargo test humanize"
+        );
+        assert_eq!(tool("Bash", "cargo build --release"), "cargo build");
+    }
+
+    #[test]
+    fn a_workflow_shows_its_name_not_its_script() {
+        let script = r#"{"script":"export const meta = {
+  name: 'margin-readability',
+  description: 'Make each row...'"}"#;
+        assert_eq!(tool("Workflow", script), "workflow: margin-readability");
     }
 
     #[test]
