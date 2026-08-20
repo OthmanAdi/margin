@@ -98,6 +98,12 @@ struct App {
     hook_live: bool,
     /// Row index and expiry of the confirmation flash, set on a rating.
     flash: Option<(usize, Instant)>,
+    /// How many ratings were still undelivered when the session ended, if it has ended.
+    ///
+    /// The one real deadline this tool has. Transcripts and ratings are permanent, but a hook
+    /// only fires inside a live session, so a rating still queued when the session closes
+    /// never reaches anyone.
+    stranded: Option<usize>,
 }
 
 impl App {
@@ -274,6 +280,7 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         parsed_lines: 0,
         hook_live: false,
         flash: None,
+        stranded: None,
     };
 
     // Ratings already on disk must reappear as marks. Keeping verdicts only in memory means
@@ -397,6 +404,7 @@ fn event_loop(
             Ok(Signal::Mouse(m)) => handle_mouse(app, m),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 app.hook_live = app.store.hook_seen();
+                app.stranded = app.store.stranded();
                 // Some editors and network shares do not produce watch events reliably, so
                 // the idle tick also polls. Cheap: a metadata call that usually returns
                 // "unchanged" and reads nothing.
@@ -517,7 +525,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             Style::new().fg(if rated > 0 { ACCENT } else { DIM }),
         ),
         Span::raw("  "),
-        if app.hook_live {
+        if let Some(n) = app.stranded.filter(|n| *n > 0) {
+            Span::styled(
+                format!("session ended, {n} never sent"),
+                Style::new().fg(BAD).bold(),
+            )
+        } else if app.hook_live {
             Span::styled("hook: live", Style::new().fg(GOOD))
         } else {
             // Not an error: it is also what a brand new session looks like before the
@@ -827,6 +840,7 @@ pub fn draw_demo(f: &mut Frame) {
         parsed_lines: 42,
         hook_live: true,
         flash: None,
+        stranded: None,
     };
     draw(f, &mut app);
 }
@@ -1002,6 +1016,7 @@ mod tests {
             parsed_lines: 0,
             hook_live: false,
             flash: None,
+            stranded: None,
         }
     }
 

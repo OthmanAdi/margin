@@ -50,6 +50,12 @@ pub enum Trigger {
     Stop,
     /// Folded into the human's next turn.
     UserPromptSubmit,
+    /// The context is about to be compacted.
+    ///
+    /// After compaction the agent holds a summary rather than the original turns, so this is
+    /// the last point at which feedback lands against the thing it refers to. margin quotes
+    /// the rated moment, so a later delivery still works, but it works better here.
+    PreCompact,
 }
 
 impl Trigger {
@@ -58,6 +64,7 @@ impl Trigger {
             Trigger::PostToolUse => "PostToolUse",
             Trigger::Stop => "Stop",
             Trigger::UserPromptSubmit => "UserPromptSubmit",
+            Trigger::PreCompact => "PreCompact",
         }
     }
 }

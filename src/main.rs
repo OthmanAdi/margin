@@ -46,7 +46,7 @@ enum Command {
     /// Prints nothing when there is nothing pending, which is the common case.
     Hook {
         /// Which hook event is firing.
-        #[arg(value_parser = ["PostToolUse", "Stop", "UserPromptSubmit"])]
+        #[arg(value_parser = ["PostToolUse", "Stop", "UserPromptSubmit", "PreCompact", "SessionEnd"])]
         event: String,
     },
 
@@ -181,6 +181,10 @@ fn hook(event: &str) -> Result<()> {
     let trigger = match event {
         "Stop" => Trigger::Stop,
         "UserPromptSubmit" => Trigger::UserPromptSubmit,
+        // The last moment the agent still holds the original turns. After compaction they
+        // are replaced by a summary, so anything not delivered by now lands against a
+        // context that no longer contains what it refers to.
+        "PreCompact" => Trigger::PreCompact,
         _ => Trigger::PostToolUse,
     };
 
@@ -202,6 +206,15 @@ fn hook(event: &str) -> Result<()> {
 
     let home = discover::home()?;
     let store = Store::for_session(&store_root(&home), Harness::ClaudeCode.as_str(), session_id);
+
+    // A session that has ended can never fire another hook, so anything still pending will
+    // never reach an agent. Recording that is the difference between a rating that is
+    // waiting and one that silently missed its window.
+    if event == "SessionEnd" {
+        let stranded = store.pending().unwrap_or_default();
+        store.mark_session_closed(stranded.len(), &now_rfc3339());
+        return Ok(());
+    }
 
     // Leave proof of life before deciding whether to speak. A hook that only writes when it
     // has something to say is indistinguishable from a hook that was never loaded, and
@@ -365,6 +378,11 @@ fn margin_segment(payload: &str) -> Option<String> {
     if !store.hook_seen() {
         parts.push(c("179", "hook not loaded".into()));
     }
+    // A closed session can never fire another hook, so anything still queued missed its one
+    // window. Saying "queued" there would be a lie by omission.
+    if let Some(n) = store.stranded().filter(|n| *n > 0) {
+        parts.push(c("174", format!("{n} never sent, session ended")));
+    }
     Some(format!("{} {}", c("109", "margin".into()), parts.join(" ")))
 }
 
@@ -402,6 +420,16 @@ fn install(write: bool, settings: Option<PathBuf>, statusline: bool) -> Result<(
             }],
             "Stop": [{
                 "hooks": [{ "type": "command", "command": format!("{exe} hook Stop") }]
+            }],
+            // The last point at which the agent still holds the original turns rather than a
+            // summary of them.
+            "PreCompact": [{
+                "hooks": [{ "type": "command", "command": format!("{exe} hook PreCompact") }]
+            }],
+            // Not a delivery. This records that delivery is no longer possible, which is the
+            // one genuine deadline a rating has.
+            "SessionEnd": [{
+                "hooks": [{ "type": "command", "command": format!("{exe} hook SessionEnd") }]
             }]
         }
     });
@@ -435,7 +463,7 @@ fn install(write: bool, settings: Option<PathBuf>, statusline: bool) -> Result<(
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
 
-    for event in ["PostToolUse", "Stop"] {
+    for event in ["PostToolUse", "Stop", "PreCompact", "SessionEnd"] {
         let ours = config["hooks"][event][0].clone();
         let arr = hooks
             .as_object_mut()

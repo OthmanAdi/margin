@@ -136,9 +136,31 @@ impl Store {
         self.heartbeat_path().exists()
     }
 
-    /// Mark ratings as handed to the agent, so the next hook invocation does not repeat
-    /// them. Repeating is the failure mode that poisons a context.
-    /// Mark exactly the ratings that were handed over.
+    fn closed_path(&self) -> PathBuf {
+        self.dir.join("session-closed")
+    }
+
+    /// Record that this session has ended and can never receive another delivery.
+    ///
+    /// The only genuine expiry margin has. Transcripts are permanent and ratings are
+    /// permanent, but a hook only fires inside a live session, so anything still pending when
+    /// the session ends missed its window. Saying so is the difference between a rating that
+    /// is waiting and one that quietly never arrived.
+    ///
+    /// Best effort: this runs inside the agent's own process on the way out.
+    pub fn mark_session_closed(&self, stranded: usize, at: &str) {
+        let _ = fs::create_dir_all(&self.dir);
+        let _ = fs::write(self.closed_path(), format!("{at} {stranded}\n"));
+    }
+
+    /// How many ratings were still undelivered when the session ended, if it has ended.
+    pub fn stranded(&self) -> Option<usize> {
+        let text = fs::read_to_string(self.closed_path()).ok()?;
+        text.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    /// Mark exactly the ratings that were handed over, so the next hook invocation does not
+    /// repeat them. Repeating is the failure mode that poisons a context.
     ///
     /// Takes ratings rather than moments because the injected block is capped: passing every
     /// pending moment marked ratings delivered that were never rendered, and they then never
