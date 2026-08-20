@@ -50,6 +50,16 @@ enum Command {
         event: String,
     },
 
+    /// Render the UI to an SVG for the README. Regenerates docs/img/.
+    Snapshot {
+        #[arg(long, default_value = "docs/img/margin.svg")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 96)]
+        cols: u16,
+        #[arg(long, default_value_t = 20)]
+        rows: u16,
+    },
+
     /// Print the hook configuration to add to Claude Code's settings.
     Install {
         /// Write it into the settings file instead of printing it.
@@ -67,6 +77,7 @@ fn main() -> Result<()> {
         Command::Watch { session, replay } => watch(session, replay),
         Command::Sessions { all, limit } => sessions(all, limit),
         Command::Hook { event } => hook(&event),
+        Command::Snapshot { out, cols, rows } => snapshot(out, cols, rows),
         Command::Install { write, settings } => install(write, settings),
     }
 }
@@ -165,6 +176,21 @@ fn hook(event: &str) -> Result<()> {
     store.mark_delivered(&ids, &now_rfc3339()).ok();
 
     println!("{}", inject::hook_output(&context, trigger));
+    Ok(())
+}
+
+fn snapshot(out: PathBuf, cols: u16, rows: u16) -> Result<()> {
+    margin::snapshot::write_svg(&out, cols, rows, "margin", margin::ui::draw_demo)?;
+    println!("wrote {} ({cols}x{rows})", out.display());
+
+    // Second image: what the agent actually receives. The README claims mid-run steering
+    // works, so it should show the payload rather than describe it.
+    let signal = out.with_file_name("signal.svg");
+    let rows2 = margin::snapshot::draw_signal_rows();
+    margin::snapshot::write_svg(&signal, cols, rows2, "what the agent receives", |f| {
+        margin::snapshot::draw_signal(f)
+    })?;
+    println!("wrote {} ({cols}x{rows2})", signal.display());
     Ok(())
 }
 

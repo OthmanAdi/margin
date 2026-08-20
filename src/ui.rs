@@ -24,6 +24,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use notify::{RecursiveMode, Watcher};
 use ratatui::prelude::*;
 use ratatui::DefaultTerminal;
+use ratatui::layout::Margin;
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
     ScrollbarOrientation, ScrollbarState, Wrap,
@@ -449,12 +450,23 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
 
     f.render_stateful_widget(list, area, &mut app.list);
 
-    let mut sb = ScrollbarState::new(app.moments.len()).position(app.list.selected().unwrap_or(0));
-    f.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight).style(Style::new().fg(DIM)),
-        area,
-        &mut sb,
-    );
+    // Only when there is something to scroll. A full-height thumb on a list that fits is
+    // noise, and drawn over the border it reads as a rendering bug.
+    let viewport = area.height.saturating_sub(2) as usize;
+    if app.moments.len() > viewport {
+        let mut sb = ScrollbarState::new(app.moments.len().saturating_sub(viewport))
+            .position(app.list.selected().unwrap_or(0));
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_symbol(None)
+                .thumb_style(Style::new().fg(DIM)),
+            // inset by one row so the thumb sits inside the rounded border, not on it
+            area.inner(Margin { vertical: 1, horizontal: 0 }),
+            &mut sb,
+        );
+    }
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
@@ -597,4 +609,75 @@ mod tests {
         assert_eq!(clock(None), "--:--:--");
         assert_eq!(clock(Some("garbage")), "--:--:--");
     }
+}
+
+/// Build a representative screen and draw it, for the README image.
+///
+/// Uses the committed Claude Code fixture, so the picture shows real parsed moments,
+/// including the thought Claude Code never persisted. Two ratings are pre-set to show what
+/// an approval and a rejection with a note look like.
+pub fn draw_demo(f: &mut Frame) {
+    let fixture = include_str!("../fixtures/claude-code/session-basic.jsonl");
+    let mut moments = harness::parse(Harness::ClaudeCode, fixture);
+
+    // The fixture is one short session; extend it with a few more moments so the picture
+    // shows a realistic run rather than four lines in a large empty box.
+    moments.extend(demo_extra_moments(moments.len()));
+
+    let mut verdicts = HashMap::new();
+    let mut notes = HashMap::new();
+    if let Some(m) = moments.iter().find(|m| matches!(m.kind, MomentKind::Said { .. })) {
+        verdicts.insert(m.id.to_string(), Verdict::Up);
+    }
+    if let Some(m) = moments.iter().find(|m| matches!(m.kind, MomentKind::Did { .. })) {
+        verdicts.insert(m.id.to_string(), Verdict::Down);
+        notes.insert(m.id.to_string(), "wrong file, use the debug log".to_string());
+    }
+
+    let mut list = ListState::default();
+    list.select(Some(moments.len().saturating_sub(2)));
+
+    let mut app = App {
+        harness: Harness::ClaudeCode,
+        path: PathBuf::from("~/.claude/projects/margin/session.jsonl"),
+        session_id: "9c42ba52-3bf1-449f-a040-8ee33284a1c8".into(),
+        moments,
+        verdicts,
+        notes,
+        store: Store::for_session(std::path::Path::new("/tmp"), "claude-code", "demo"),
+        store_root: PathBuf::from("/tmp"),
+        list,
+        following: true,
+        mode: Mode::Browsing,
+        status: Some("noted, the agent hears it at its next tool call".into()),
+        parsed_lines: 42,
+    };
+    draw(f, &mut app);
+}
+
+fn demo_extra_moments(from: usize) -> Vec<Moment> {
+    use crate::moment::MomentId;
+    let at = |s: &str| Some(format!("2026-08-20T{s}Z"));
+    let mk = |i: usize, t: &str, kind: MomentKind| Moment {
+        id: MomentId::new(Harness::ClaudeCode, "demo", format!("d{i}"), 0),
+        seq: from + i,
+        at: at(t),
+        kind,
+    };
+    vec![
+        mk(0, "12:04:31", MomentKind::Thought { text: None, bytes: 4524 }),
+        mk(1, "12:04:38", MomentKind::Said {
+            text: "0 of 71 thinking blocks have readable text. It is signature only.".into(),
+        }),
+        mk(2, "12:04:52", MomentKind::Did {
+            tool: "Read".into(),
+            input: "src/harness/claude_code.rs".into(),
+            output: Some("ok".into()),
+            tool_use_id: Some("toolu_02".into()),
+        }),
+        mk(3, "12:05:03", MomentKind::Thought { text: None, bytes: 3180 }),
+        mk(4, "12:05:11", MomentKind::Said {
+            text: "Switching to the streaming interface, where the text is available.".into(),
+        }),
+    ]
 }

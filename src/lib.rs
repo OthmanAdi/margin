@@ -9,6 +9,7 @@ pub mod harness;
 pub mod inject;
 pub mod moment;
 pub mod ratings;
+pub mod snapshot;
 pub mod tail;
 pub mod ui;
 
