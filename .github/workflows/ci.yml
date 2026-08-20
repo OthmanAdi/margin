@@ -19,7 +19,7 @@ jobs:
         # file-sharing behaviour margin depends on are both Windows-specific.
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-features
@@ -28,7 +28,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -40,10 +40,16 @@ jobs:
     name: images match the code
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The README images are generated from the real widget tree, so a UI change that
       # forgets to regenerate them should fail rather than ship a stale picture.
       - run: cargo run --release -- snapshot --out docs/img/margin.svg --cols 96 --rows 18
-      - run: git diff --exit-code docs/img/ || (echo "::error::docs/img is stale, run: cargo run -- snapshot" && exit 1)
+      # a plain YAML scalar cannot contain ": ", so this needs a block scalar
+      - name: fail if the checked-in images are stale
+        run: |
+          git diff --exit-code docs/img/ || {
+            echo "::error::docs/img is stale. Regenerate with cargo run -- snapshot"
+            exit 1
+          }
