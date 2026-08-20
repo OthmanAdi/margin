@@ -24,12 +24,28 @@ const harness = (() => {
 const MAX_STR = 300;
 const DROP_TYPES = new Set(["attachment", "file-history-snapshot", "file-history-delta"]);
 
+// Fixtures are committed to a public repo, so real home directories must not survive.
+// Applies to every string, not just the obvious `cwd`, because paths turn up inside tool
+// inputs, results, and prose.
+const HOME = (process.env.USERPROFILE || process.env.HOME || "").replace(/\\/g, "\\\\");
+const USER = (process.env.USERNAME || process.env.USER || "").trim();
+
+function redactPaths(s) {
+  let out = s;
+  if (HOME) out = out.split(HOME).join("<home>");
+  if (USER && USER.length > 2) {
+    out = out.split(USER).join("<user>");
+  }
+  return out;
+}
+
 function shrink(value, key) {
   if (typeof value === "string") {
     if (key === "signature" || key === "encrypted_content") {
       return value.slice(0, 32) + (value.length > 32 ? "…<truncated>" : "");
     }
-    return value.length > MAX_STR ? value.slice(0, MAX_STR) + "…<truncated>" : value;
+    const v = redactPaths(value);
+    return v.length > MAX_STR ? v.slice(0, MAX_STR) + "…<truncated>" : v;
   }
   if (Array.isArray(value)) return value.map((v) => shrink(v));
   if (value && typeof value === "object") {

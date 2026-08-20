@@ -52,8 +52,11 @@ for (const line of fs.readFileSync(input, "utf8").split("\n")) {
   seen++;
   let e; try { e = JSON.parse(line); } catch (err) { continue; }
 
+  // session_meta is typed at the entry level; everything else is typed inside payload.
   const p = e.payload || e;
-  if (!KEEP.has(p.type)) continue;
+  const type = e.type === "session_meta" ? "session_meta" : p.type;
+  if (!KEEP.has(type)) continue;
+  p.type = type;
 
   // rebuild rather than filter, so no unexpected sibling field survives
   const payload = { type: p.type };
@@ -68,7 +71,7 @@ for (const line of fs.readFileSync(input, "utf8").split("\n")) {
   }
   if (p.type === "token_count") payload.info = p.info ? { total_token_usage: p.info.total_token_usage } : undefined;
 
-  const entry = { timestamp: e.timestamp, type: e.type, payload };
+  const entry = { timestamp: e.timestamp, type: p.type === "session_meta" ? "session_meta" : e.type, payload };
   out.push(JSON.stringify(entry));
   keptCount++;
 }

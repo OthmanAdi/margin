@@ -1,0 +1,22 @@
+[package]
+name = "margin"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Rate your coding agent while it runs. One keystroke, no interruption."
+repository = "https://github.com/OthmanAdi/margin"
+license = "MIT"
+readme = "README.md"
+keywords = ["ai", "agent", "tui", "feedback", "claude-code"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+time = { version = "0.3", features = ["formatting", "parsing", "macros", "local-offset"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
