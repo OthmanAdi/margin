@@ -89,6 +89,13 @@ pub enum MomentKind {
         input: String,
         output: Option<String>,
         tool_use_id: Option<String>,
+        /// What the agent said it was doing, in its own words.
+        ///
+        /// Claude Code's shell tools carry a short human-written `description` alongside the
+        /// command. It is a far better row label than anything that can be recovered by
+        /// parsing the command, and it was being discarded because the parser read `command`
+        /// first. Optional: not every tool sends one.
+        intent: Option<String>,
     },
 
     /// Reasoning.
@@ -139,6 +146,12 @@ impl Moment {
             MomentKind::Asked { text } | MomentKind::Said { text } => {
                 crate::humanize::first_sentence(text, width)
             }
+            // The agent's own description wins when it sent one. Reconstructing intent from
+            // a shell command is guesswork; this is the author telling us directly.
+            MomentKind::Did {
+                intent: Some(intent),
+                ..
+            } if !intent.trim().is_empty() => crate::humanize::clip(intent.trim(), width),
             MomentKind::Did { tool, input, .. } => {
                 crate::humanize::clip(&crate::humanize::tool(tool, input), width)
             }

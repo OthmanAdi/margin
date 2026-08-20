@@ -169,6 +169,9 @@ pub fn parse_at(input: &str, first_line: usize) -> Vec<Moment> {
                         .get("call_id")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    // Codex sends no human description alongside a call, so its rows stay on
+                    // the parsed-command path.
+                    intent: None,
                 }
             }
             _ => continue,

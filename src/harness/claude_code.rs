@@ -150,6 +150,11 @@ fn parse_entry(
                         let tool_use_id =
                             block.get("id").and_then(Value::as_str).map(str::to_string);
                         let input = summarise_tool_input(block.get("input"));
+                        let intent = block
+                            .get("input")
+                            .and_then(|i| i.get("description"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
                         if let Some(id) = &tool_use_id {
                             pending.push((id.clone(), out.len()));
                         }
@@ -165,6 +170,7 @@ fn parse_entry(
                                 input,
                                 output: None,
                                 tool_use_id,
+                                intent,
                             },
                         );
                     }
@@ -214,16 +220,11 @@ fn take_pending(pending: &mut Vec<(String, usize)>, id: &str) -> Option<usize> {
 /// reads `Bash(echo hello)` rather than `Bash({"command":"echo hello","description":…})`.
 fn summarise_tool_input(input: Option<&Value>) -> String {
     let Some(v) = input else { return String::new() };
-    for key in [
-        "command",
-        "pattern",
-        "file_path",
-        "path",
-        "query",
-        "prompt",
-        "url",
-        "description",
-    ] {
+    // `description` is deliberately absent: it is the agent's own human summary and is
+    // carried separately as `intent`, which the row prefers. Leaving it here made the
+    // fallback indistinguishable from the preferred path. `prompt` is absent because it is a
+    // multi-paragraph instruction block, exactly the raw dump a row must never show.
+    for key in ["command", "pattern", "file_path", "path", "query", "url"] {
         if let Some(s) = v.get(key).and_then(Value::as_str) {
             if !s.trim().is_empty() {
                 return s.to_string();
@@ -307,6 +308,7 @@ mod tests {
             input,
             output,
             tool_use_id,
+            intent,
         } = &dids[0].kind
         else {
             unreachable!()
@@ -318,6 +320,10 @@ mod tests {
             output.as_deref().unwrap().contains("hello"),
             "result should be attached"
         );
+        // The agent's own description is kept. It is a better row label than anything
+        // recoverable by parsing the command, and it was previously discarded because the
+        // input summariser read `command` first and stopped there.
+        assert_eq!(intent.as_deref(), Some("Run echo hello command"));
     }
 
     #[test]

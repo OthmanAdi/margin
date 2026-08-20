@@ -64,11 +64,13 @@ fn parse_time_and_memory_on_the_biggest_real_transcript() {
                     input,
                     output,
                     tool_use_id,
+                    intent,
                 } => {
                     tool.capacity()
                         + input.capacity()
                         + output.as_ref().map_or(0, String::capacity)
                         + tool_use_id.as_ref().map_or(0, String::capacity)
+                        + intent.as_ref().map_or(0, String::capacity)
                 }
                 MomentKind::Thought { text, .. } => text.as_ref().map_or(0, String::capacity),
             };

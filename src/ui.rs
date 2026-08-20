@@ -784,6 +784,7 @@ fn demo_extra_moments(from: usize) -> Vec<Moment> {
                 input: "src/harness/claude_code.rs".into(),
                 output: Some("ok".into()),
                 tool_use_id: Some("toolu_02".into()),
+                intent: Some("check what the parser reads".into()),
             },
         ),
         mk(
@@ -914,7 +915,8 @@ mod tests {
                 tool: "Bash".into(),
                 input: "ls".into(),
                 output: None,
-                tool_use_id: None
+                tool_use_id: None,
+                intent: None,
             }),
             "did:Bash"
         );

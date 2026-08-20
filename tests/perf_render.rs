@@ -129,6 +129,7 @@ fn make_session(
                 input: format!("cargo test --release --test perf_render -- case_{i}"),
                 output: Some(format!("ok, {i} passed")),
                 tool_use_id: Some(format!("toolu_{i:08}")),
+                intent: Some(format!("run perf case {i}")),
             },
             _ => MomentKind::Thought {
                 text: None,
