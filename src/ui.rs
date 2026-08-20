@@ -25,7 +25,11 @@ use crate::moment::{Harness, Moment, MomentKind};
 use crate::ratings::{Rating, Store, Verdict};
 use crate::tail::Tailer;
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
+use crossterm::execute;
 use notify::{RecursiveMode, Watcher};
 use ratatui::layout::Margin;
 use ratatui::prelude::*;
@@ -37,10 +41,21 @@ use ratatui::DefaultTerminal;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the render loop wakes when nothing has happened.
-const IDLE_TICK: Duration = Duration::from_millis(250);
+///
+/// 60ms rather than 250ms. The rating flash below lasts 180ms, and a 250ms tick could not
+/// reliably clear it, so the highlight lingered or never appeared depending on when the key
+/// landed relative to the tick. An idle wake is a metadata call and a redraw of a screen that
+/// has not changed, which is cheap enough to pay for feedback that feels immediate.
+const IDLE_TICK: Duration = Duration::from_millis(60);
+
+/// How long a row stays lit after being rated.
+///
+/// Long enough to register as a deliberate confirmation, short enough that it is gone before
+/// the eye moves on. Under about 100ms reads as a flicker; over about 300ms reads as lag.
+const FLASH: Duration = Duration::from_millis(180);
 
 #[derive(Debug)]
 enum Signal {
@@ -48,6 +63,7 @@ enum Signal {
     /// rather than one redraw each.
     FileChanged,
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Quit,
 }
 
@@ -80,6 +96,8 @@ struct App {
     /// Whether the hook has ever fired for this session. Answers the first question a new
     /// user has, which is whether any of this is actually wired up.
     hook_live: bool,
+    /// Row index and expiry of the confirmation flash, set on a rating.
+    flash: Option<(usize, Instant)>,
 }
 
 impl App {
@@ -204,6 +222,7 @@ impl App {
                 if let Some(n) = note {
                     self.notes.insert(key, n);
                 }
+                self.flash = Some((index, Instant::now() + FLASH));
                 self.status = Some("noted, the agent hears it at its next tool call".into());
             }
             Err(e) => self.status = Some(format!("could not save: {e}")),
@@ -254,6 +273,7 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         status: None,
         parsed_lines: 0,
         hook_live: false,
+        flash: None,
     };
 
     // Ratings already on disk must reappear as marks. Keeping verdicts only in memory means
@@ -275,6 +295,11 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         match event::read() {
             Ok(Event::Key(k)) => {
                 if key_tx.send(Signal::Key(k)).is_err() {
+                    break;
+                }
+            }
+            Ok(Event::Mouse(m)) => {
+                if key_tx.send(Signal::Mouse(m)).is_err() {
                     break;
                 }
             }
@@ -306,7 +331,12 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
 
     let mut terminal = ratatui::init();
     install_panic_hook();
+    // Scrolling with the wheel is the other natural way to move a cursor in a list. The cost
+    // is that the terminal's own click-drag text selection stops working while margin runs,
+    // which is the standard trade every mouse-aware TUI makes.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let result = event_loop(&mut terminal, &mut app, &mut tailer, &rx);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -315,6 +345,7 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
 fn install_panic_hook() {
     let original = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
         original(info);
     }));
@@ -338,15 +369,20 @@ fn event_loop(
                 // happened to change first, and the keypress was discarded with the
                 // duplicate file events.
                 let mut keys = Vec::new();
+                let mut mice = Vec::new();
                 while let Ok(sig) = rx.try_recv() {
                     match sig {
                         Signal::Key(k) => keys.push(k),
+                        Signal::Mouse(m) => mice.push(m),
                         Signal::Quit => return Ok(()),
                         Signal::FileChanged => {}
                     }
                 }
                 let lines = tailer.poll()?;
                 app.absorb(&lines);
+                for m in mice {
+                    handle_mouse(app, m);
+                }
                 for k in keys {
                     if handle_key(app, k) {
                         return Ok(());
@@ -358,6 +394,7 @@ fn event_loop(
                     return Ok(());
                 }
             }
+            Ok(Signal::Mouse(m)) => handle_mouse(app, m),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 app.hook_live = app.store.hook_seen();
                 // Some editors and network shares do not produce watch events reliably, so
@@ -368,6 +405,16 @@ fn event_loop(
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
+    }
+}
+
+fn handle_mouse(app: &mut App, m: MouseEvent) {
+    // Three rows per notch, which is what most terminals and editors use. One row per notch
+    // feels stuck on a list this dense; a full page feels like it jumped.
+    match m.kind {
+        MouseEventKind::ScrollUp => app.move_by(-3),
+        MouseEventKind::ScrollDown => app.move_by(3),
+        _ => {}
     }
 }
 
@@ -436,6 +483,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(3),    // moments
+        Constraint::Length(4), // what is selected, in full
         Constraint::Length(1), // status
         Constraint::Length(1), // keys
     ])
@@ -443,8 +491,9 @@ fn draw(f: &mut Frame, app: &mut App) {
 
     draw_header(f, chunks[0], app);
     draw_moments(f, chunks[1], app);
-    draw_status(f, chunks[2], app);
-    draw_keys(f, chunks[3]);
+    draw_detail(f, chunks[2], app);
+    draw_status(f, chunks[3], app);
+    draw_keys(f, chunks[4]);
 
     if let Mode::Noting { buffer, .. } = &app.mode {
         draw_note_prompt(f, area, buffer);
@@ -515,13 +564,20 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let width = area.width.saturating_sub(24) as usize;
+    let now = Instant::now();
+    let flashing = app.flash.filter(|(_, until)| *until > now).map(|(i, _)| i);
+
     let items: Vec<ListItem> = app
         .moments
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(idx, m)| {
             let key = m.id.to_string();
             let verdict = app.verdicts.get(&key).copied();
             let mut spans = vec![
+                // The rating mark gets its own column, separate from the cursor. Overloading
+                // one glyph with "where you are" and "what you decided" made a rated row and
+                // the selected row compete for the same cue.
                 Span::styled(
                     format!(" {} ", verdict_glyph(verdict)),
                     verdict_style(verdict),
@@ -539,7 +595,21 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
                     Style::new().fg(WARN).italic(),
                 ));
             }
-            ListItem::new(Line::from(spans))
+            let item = ListItem::new(Line::from(spans));
+            // The confirmation flash. A whole-row wash for a moment, so a keypress is
+            // unmistakably registered without the eye having to find a small glyph.
+            match flashing {
+                Some(f) if f == idx => item.style(
+                    Style::new()
+                        .bg(match verdict {
+                            Some(Verdict::Down) => FLASH_BAD,
+                            _ => FLASH_GOOD,
+                        })
+                        .fg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                _ => item,
+            }
         })
         .collect();
 
@@ -550,8 +620,12 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
 
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::new().bg(SELECT).bold())
-        .highlight_symbol("");
+        // Background only, no foreground. Setting a foreground here would flatten the
+        // per-column colour coding on exactly the row the user is reading most carefully.
+        .highlight_style(Style::new().bg(SELECT))
+        // A solid left bar, always reserved, so rows never shift sideways as the cursor moves.
+        .highlight_symbol("▌")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
 
     f.render_stateful_widget(list, area, &mut app.list);
 
@@ -603,7 +677,7 @@ fn draw_keys(f: &mut Frame, area: Rect) {
             Span::styled("D", key),
             Span::styled(" bad + why   ", lbl),
             Span::styled("g", key),
-            Span::styled(" follow   ", lbl),
+            Span::styled(" newest   ", lbl),
             Span::styled("q", key),
             Span::styled(" quit", lbl),
         ])),
@@ -643,7 +717,12 @@ const DIM: Color = Color::DarkGray;
 const WARN: Color = Color::Yellow;
 const GOOD: Color = Color::Green;
 const BAD: Color = Color::Red;
-const SELECT: Color = Color::Indexed(236);
+/// Selection background. Dark enough that the per-column colours still read on top of it,
+/// light enough to locate instantly in a dense list.
+const SELECT: Color = Color::Indexed(237);
+/// Confirmation wash after an approval and after a rejection.
+const FLASH_GOOD: Color = Color::Indexed(114);
+const FLASH_BAD: Color = Color::Indexed(174);
 
 fn verdict_glyph(v: Option<Verdict>) -> &'static str {
     match v {
@@ -747,6 +826,7 @@ pub fn draw_demo(f: &mut Frame) {
         status: Some("noted, the agent hears it at its next tool call".into()),
         parsed_lines: 42,
         hook_live: true,
+        flash: None,
     };
     draw(f, &mut app);
 }
@@ -804,6 +884,95 @@ fn demo_extra_moments(from: usize) -> Vec<Moment> {
         ),
     ]
 }
+
+/// What is under the cursor, in full.
+///
+/// The list clips every row to one line, which is what makes it skimmable, but it means the
+/// thing you are about to rate is usually truncated. Pressing a key on a half-read row is a
+/// guess. This pane removes the guess: it shows the selected moment wrapped, with what it
+/// was and what came back.
+fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
+    let Some(m) = app.list.selected().and_then(|i| app.moments.get(i)) else {
+        return;
+    };
+    let key = m.id.to_string();
+    let verdict = app.verdicts.get(&key).copied();
+
+    let head = Line::from(vec![
+        Span::styled(" ▎", Style::new().fg(ACCENT)),
+        Span::styled(
+            format!("{} ", m.kind.label()),
+            kind_style(&m.kind).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(clock(m.at.as_deref()), Style::new().fg(DIM)),
+        match verdict {
+            Some(Verdict::Up) => Span::styled("  approved", Style::new().fg(GOOD).bold()),
+            Some(Verdict::Down) => Span::styled("  rejected", Style::new().fg(BAD).bold()),
+            None => Span::styled("  not rated", Style::new().fg(DIM)),
+        },
+        match &m.kind {
+            MomentKind::Did {
+                output: Some(o), ..
+            } => Span::styled(
+                format!("   returned {}", size_of(o.len())),
+                Style::new().fg(DIM),
+            ),
+            MomentKind::Did { output: None, .. } => {
+                Span::styled("   still running", Style::new().fg(WARN))
+            }
+            _ => Span::raw(""),
+        },
+    ]);
+
+    // The full text, not the row's clipped version.
+    let body = match &m.kind {
+        MomentKind::Asked { text } | MomentKind::Said { text } => crate::humanize::collapse(text),
+        MomentKind::Thought {
+            text: Some(t),
+            ..
+        } => crate::humanize::collapse(t),
+        MomentKind::Thought { text: None, bytes } => format!(
+            "Claude Code does not persist thinking text, so there is nothing to show. {} of reasoning happened here.",
+            size_of(*bytes)
+        ),
+        MomentKind::Did { tool, input, .. } => format!("{tool}  {}", crate::humanize::collapse(input)),
+    };
+
+    let mut lines = vec![head];
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  {}",
+            crate::humanize::clip(&body, area.width.saturating_sub(4) as usize * 2)
+        ),
+        body_style(&m.kind),
+    )));
+    if let Some(note) = app.notes.get(&key) {
+        lines.push(Line::from(Span::styled(
+            format!("  why: {note}"),
+            Style::new().fg(WARN).italic(),
+        )));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::new().fg(DIM)),
+        ),
+        area,
+    );
+}
+
+/// Byte counts a person reads without counting digits.
+fn size_of(n: usize) -> String {
+    if n >= 1_048_576 {
+        format!("{:.1} MB", n as f64 / 1_048_576.0)
+    } else if n >= 1024 {
+        format!("{:.1} kB", n as f64 / 1024.0)
+    } else {
+        format!("{n} B")
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,6 +1001,7 @@ mod tests {
             status: None,
             parsed_lines: 0,
             hook_live: false,
+            flash: None,
         }
     }
 
