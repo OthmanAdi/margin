@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-supported-7c5cff.svg)](#supported-harnesses)
-[![Codex](https://img.shields.io/badge/Codex-supported-10a37f.svg)](#supported-harnesses)
+[![Codex](https://img.shields.io/badge/Codex-read%20only-10a37f.svg)](#supported-harnesses)
 
 <img src="docs/img/margin.svg" alt="margin: a pane listing what the agent said, did and thought, with two moments rated" width="100%">
 
@@ -146,8 +146,8 @@ reproduces it in [`research/`](research/):
 | A rating changes what the agent does next | `bash research/live_proof.sh /tmp/proof` |
 
 The last one is the important one. It never asks the agent whether it received anything: it
-gives it a repetitive four-step task, drops a rejection after the first step, and compares
-the commands it ran before and after.
+gives it a repetitive eight-step task, drops a rejection after the second step, and
+compares the commands it ran before and after.
 
 ## How it works
 
