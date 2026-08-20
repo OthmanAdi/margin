@@ -238,6 +238,7 @@ These are enforced, not aspirational. See [CLAUDE.md](CLAUDE.md).
 
 ## Documents
 
+- [docs/HANDOFF.md](docs/HANDOFF.md) — start here to pick this up cold: state, traps, and what to build next
 - [docs/PROOF.md](docs/PROOF.md) — a rating changing a live agent's behaviour, and the three runs it took to prove honestly
 - [docs/FEASIBILITY.md](docs/FEASIBILITY.md) — what is possible, measured against real internals
 - [docs/DESIGN.md](docs/DESIGN.md) — shape, data flow, build order
