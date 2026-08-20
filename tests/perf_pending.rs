@@ -55,8 +55,10 @@ fn pending_cost_steady_state_all_delivered() {
         for i in 0..n {
             store.record(&rating(i, Verdict::Up)).unwrap();
         }
-        let ids: Vec<_> = (0..n).map(|i| rating(i, Verdict::Up).moment).collect();
-        store.mark_delivered(&ids, "2026-08-20T12:00:01Z").unwrap();
+        // mark_delivered takes the ratings themselves, so a delivery references the exact
+        // revision that went out rather than just the moment.
+        let sent: Vec<_> = (0..n).map(|i| rating(i, Verdict::Up)).collect();
+        store.mark_delivered(&sent, "2026-08-20T12:00:01Z").unwrap();
 
         let ratings_bytes = fs::metadata(root.join("claude-code/sess/ratings.jsonl"))
             .map(|m| m.len())
@@ -122,8 +124,7 @@ fn full_session_simulation_pending_called_every_tool_call() {
         let pending = store.pending().unwrap();
         if !pending.is_empty() {
             total_pending_seen += pending.len();
-            let ids: Vec<_> = pending.iter().map(|r| r.moment.clone()).collect();
-            store.mark_delivered(&ids, "2026-08-20T12:00:01Z").unwrap();
+            store.mark_delivered(&pending, "2026-08-20T12:00:01Z").unwrap();
         }
     }
     let elapsed = start.elapsed();

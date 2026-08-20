@@ -9,6 +9,7 @@
 <text x="95.6" y="67.0" fill="#6e7681" xml:space="preserve">claude-code 9c42ba52</text>
 <text x="280.4" y="67.0" fill="#6e7681" xml:space="preserve">10 moments</text>
 <text x="381.2" y="67.0" fill="#56d4dd" xml:space="preserve">2 rated</text>
+<text x="456.8" y="67.0" fill="#7ee787" xml:space="preserve">hook: live</text>
 <text x="20.0" y="85.0" fill="#6e7681" xml:space="preserve">╭──────────────────────────────────────────────────────────────────────────────────────────────╮</text>
 <text x="20.0" y="103.0" fill="#6e7681" xml:space="preserve">│</text>
 <text x="53.6" y="103.0" fill="#6e7681" xml:space="preserve">10:21:54 asked   Run the bash command 'echo hello' using your Bash tool. Then, in your f…</text>
