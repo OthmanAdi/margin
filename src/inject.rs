@@ -5,36 +5,48 @@
 //! without the user typing and without the turn being interrupted.
 //!
 //! The mechanism is the easy half. The wording is the hard half, because a naive dump has
-//! four predictable failure modes:
+//! five predictable failure modes:
 //!
 //! | failure | what it looks like | design answer |
 //! |---|---|---|
-//! | treats it as a user turn | agent stops and replies "thanks for the feedback" | say explicitly this is not a turn and needs no reply |
-//! | over-correction | one thumbs-down on a grep and the agent abandons a sound plan | scope the signal to the moment, ask for adjustment not restart |
-//! | sycophancy | agent starts narrating to fish for approval | forbid seeking approval, forbid mentioning the signal |
-//! | context poisoning | the same complaint re-injected every tool call | deliver once, enforced by the store |
+//! | treated as a user turn | agent stops and replies "thanks for the feedback" | third-person observational voice, stated to be harness-generated |
+//! | flagged as prompt injection | the agent surfaces the block to the user instead of absorbing it | never second-person commands; mirror the harness's own `system-reminder` register |
+//! | over-correction | one rejected grep and a sound plan is abandoned | called a data point, not a mandate; a bare tap only suppresses the exact action |
+//! | sycophancy | agent narrates to fish for approval | no tallies, no praise words, clinical register |
+//! | context poisoning | the same complaint re-injected every tool call | delivered once, enforced by the store |
 //!
-//! Positive and negative are deliberately separated. "Keep doing X" and "stop doing Y" are
-//! different instructions and blur into noise when interleaved.
+//! Two orderings matter and both are counter-intuitive:
+//!
+//! Items run oldest to newest, so the **most recent lands last**. In-context recency bias
+//! gives the final item disproportionate weight, which is where the freshest judgment
+//! belongs. The first version of this file sorted newest-first and put the most important
+//! signal in the weakest position.
+//!
+//! Every item pairs a concrete anchor with a generalised rule, anchor first. The rule alone
+//! floats free of what triggered it; the quote alone does not transfer to a different
+//! situation later.
 
 use crate::moment::MomentKind;
 use crate::ratings::{Rating, Verdict};
 
 /// How many ratings ride in one injection.
 ///
-/// Past a handful the agent starts weighing them as a list to work through rather than a
-/// signal to absorb, and the newest, most relevant one gets buried. Overflow is not lost:
-/// it stays pending and lands at the next tool call.
-pub const MAX_PER_INJECTION: usize = 6;
+/// Five, matching the 3-5 range that multishot guidance converges on. Past that the agent
+/// treats the block as a list to work through rather than a signal to absorb. Overflow is
+/// not lost: it stays pending and lands at the next boundary.
+pub const MAX_PER_INJECTION: usize = 5;
+
+/// Anchors are truncated so one verbose tool call cannot crowd out four other signals.
+const ANCHOR_CHARS: usize = 120;
 
 /// When it is worth interrupting nothing to say something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// After a tool call completes. The main path: frequent during real work, and the agent
-    /// is between actions rather than mid-thought.
+    /// After a tool call completes. The main path: frequent during real work, and a
+    /// boundary the agent was about to cross anyway, so nothing in flight is split.
     PostToolUse,
-    /// The agent is about to finish. Last chance to land feedback, and the one that matters
-    /// during an unattended `/goal` run where nobody is about to type anything.
+    /// The agent is about to finish. The one that matters during an unattended run, when
+    /// nobody is about to type anything.
     Stop,
     /// Folded into the human's next turn.
     UserPromptSubmit,
@@ -53,74 +65,125 @@ impl Trigger {
 /// Render the block of text handed to the agent.
 ///
 /// Returns None when there is nothing pending, and the caller must then emit no output at
-/// all. Staying silent in the common case is what keeps this free: a hook that always says
-/// something trains the agent to skim past it.
+/// all. Silence in the common case is what keeps this cheap and keeps the agent from
+/// learning to skim past the tag.
 pub fn render(ratings: &[Rating], trigger: Trigger) -> Option<String> {
     if ratings.is_empty() {
         return None;
     }
 
-    // Newest first: if the cap bites, the most recent judgment is the one that survives.
+    // Oldest first so the freshest judgment occupies the final, highest-weight position.
     let mut ordered: Vec<&Rating> = ratings.iter().collect();
-    ordered.sort_by(|a, b| b.at.cmp(&a.at));
-    let shown: Vec<&Rating> = ordered.into_iter().take(MAX_PER_INJECTION).collect();
-
-    let (up, down): (Vec<&Rating>, Vec<&Rating>) =
-        shown.iter().partition(|r| r.verdict == Verdict::Up);
+    ordered.sort_by(|a, b| a.at.cmp(&b.at));
+    // When the cap bites, drop the stalest rather than the newest.
+    let start = ordered.len().saturating_sub(MAX_PER_INJECTION);
+    let shown = &ordered[start..];
 
     let mut s = String::new();
-    s.push_str("<margin-signal>\n");
+    s.push_str(&format!(
+        "<margin-signal kind=\"runtime_telemetry\" count=\"{}\">\n",
+        shown.len()
+    ));
     s.push_str(
-        "The user reacted to specific moments of this run, from a side channel. \
-         This is a signal, not a message in the conversation.\n\n",
+        "Generated by margin, not written by the user. The user reacted to specific moments \
+         of this run from a side channel. This is not a conversational turn: it expects no \
+         reply, no acknowledgement, and no pause in the current task.\n\n",
     );
 
-    if !up.is_empty() {
-        s.push_str("APPROVED, do more of this:\n");
-        for r in &up {
-            push_item(&mut s, r);
-        }
-        s.push('\n');
+    for (i, r) in shown.iter().enumerate() {
+        s.push_str(&format!("{}. {}\n", i + 1, headline(r)));
+        s.push_str(&format!("   at {} — \"{}\"\n", short_time(&r.at), anchor(r)));
+        s.push_str(&format!("   takeaway: {}\n", takeaway(r)));
     }
 
-    if !down.is_empty() {
-        s.push_str("REJECTED, do less of this:\n");
-        for r in &down {
-            push_item(&mut s, r);
-        }
-        s.push('\n');
+    if let Some(subject) = conflicting_subject(shown) {
+        s.push_str(&format!(
+            "\nTwo of these are about {subject} and point in opposite directions. Weight the \
+             more recent and more specific one rather than averaging them.\n"
+        ));
     }
 
-    s.push_str("How to use this:\n");
+    s.push('\n');
     s.push_str(
-        "- Infer the general behaviour behind each reaction, not just the single moment. \
-         The moment is an example of a preference, not the whole of it.\n",
+        "These are soft priors from a small sample. Fold them into how the rest of this \
+         session proceeds; do not overhaul an approach that is otherwise working, and do not \
+         restart work already done. ",
     );
-    s.push_str(
-        "- Apply it from here on. Adjust your current approach; do not restart work that \
-         is already sound.\n",
-    );
-    s.push_str("- Do not reply to this, do not thank the user, do not mention that you received it.\n");
-    s.push_str("- Do not seek further approval or narrate in the hope of more of it.\n");
 
     if trigger == Trigger::Stop {
         s.push_str(
-            "- You are about to finish. If a rejection above means the work is not actually \
-             done, keep going instead of stopping.\n",
+            "This run is about to end. If a rejection above means the work is not actually \
+             finished, continue instead of stopping. ",
         );
+    } else {
+        s.push_str("Continue the task now. ");
     }
 
+    s.push_str("Do not comment on this block unless the user asks what changed.\n");
     s.push_str("</margin-signal>");
     Some(s)
 }
 
-fn push_item(s: &mut String, r: &Rating) {
-    let when = short_time(&r.at);
-    let what = r.preview.as_deref().unwrap_or("<no preview captured>");
-    s.push_str(&format!("  - [{when}] {what}\n"));
-    if let Some(note) = r.note.as_deref().filter(|n| !n.trim().is_empty()) {
-        s.push_str(&format!("    the user said: \"{}\"\n", note.trim()));
+fn headline(r: &Rating) -> &'static str {
+    match r.verdict {
+        Verdict::Up => "APPROVED — the user reacted positively to this",
+        Verdict::Down => "REJECTED — the user reacted negatively to this",
     }
+}
+
+/// What concretely happened. Deterministically extracted from the transcript, never
+/// generated, so a takeaway can always be checked against a true quote.
+fn anchor(r: &Rating) -> String {
+    let raw = r.preview.as_deref().unwrap_or("<no preview captured>");
+    let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= ANCHOR_CHARS {
+        return collapsed;
+    }
+    collapsed.chars().take(ANCHOR_CHARS - 1).collect::<String>() + "…"
+}
+
+/// The generalised rule.
+///
+/// When the user typed a note, that note is the signal and is used verbatim: the human
+/// already said the thing a model would only be guessing at.
+///
+/// When they did not, a bare tap carries polarity and nothing else. It does not say which
+/// axis failed, so the takeaway stays deliberately narrow. A single unexplained tap should
+/// change the next decision, not the strategy.
+fn takeaway(r: &Rating) -> String {
+    match (&r.note, r.verdict) {
+        (Some(note), Verdict::Up) if !note.trim().is_empty() => {
+            format!("keep doing this, specifically: {}", note.trim())
+        }
+        (Some(note), Verdict::Down) if !note.trim().is_empty() => {
+            format!("stop doing this; instead: {}", note.trim())
+        }
+        (_, Verdict::Up) => "prefer this approach where the same choice comes up again".into(),
+        (_, Verdict::Down) => {
+            "at minimum do not repeat this exact action in this session; no reason was given, \
+             so treat it as narrow rather than as a verdict on the wider approach"
+                .into()
+        }
+    }
+}
+
+/// Whether two of these judgments genuinely pull against each other.
+///
+/// Not "some approvals and some rejections", which describes nearly every batch. A conflict
+/// is the same kind of behaviour being both approved and rejected, such as one Bash call
+/// approved and another rejected. Telling an agent that two unrelated judgments contradict
+/// each other is worse than saying nothing, because it invites discarding both.
+fn conflicting_subject(shown: &[&Rating]) -> Option<String> {
+    for r in shown {
+        let subject = r.subject.as_deref()?;
+        let opposed = shown
+            .iter()
+            .any(|o| o.subject.as_deref() == Some(subject) && o.verdict != r.verdict);
+        if opposed {
+            return Some(subject.to_string());
+        }
+    }
+    None
 }
 
 /// `2026-08-20T12:04:19.412Z` becomes `12:04:19`. Falls back to the raw string rather than
@@ -143,10 +206,10 @@ pub fn hook_output(context: &str, trigger: Trigger) -> String {
     .to_string()
 }
 
-/// A short label for the card, used when a rating has no preview of its own.
+/// A short label used when a rating has no preview of its own.
 pub fn describe(kind: &MomentKind) -> String {
     match kind {
-        MomentKind::Said { .. } => "said something".into(),
+        MomentKind::Said { .. } => "something the agent said".into(),
         MomentKind::Asked { .. } => "the user's message".into(),
         MomentKind::Did { tool, .. } => format!("the {tool} call"),
         MomentKind::Thought { .. } => "a step of reasoning".into(),
@@ -159,12 +222,24 @@ mod tests {
     use crate::moment::{Harness, MomentId};
 
     fn r(entry: &str, verdict: Verdict, at: &str, note: Option<&str>, preview: &str) -> Rating {
+        rs(entry, verdict, at, note, preview, Some("said"))
+    }
+
+    fn rs(
+        entry: &str,
+        verdict: Verdict,
+        at: &str,
+        note: Option<&str>,
+        preview: &str,
+        subject: Option<&str>,
+    ) -> Rating {
         Rating {
             moment: MomentId::new(Harness::ClaudeCode, "sess", entry, 0),
             verdict,
             note: note.map(str::to_string),
             at: at.to_string(),
             preview: Some(preview.to_string()),
+            subject: subject.map(str::to_string),
         }
     }
 
@@ -173,48 +248,23 @@ mod tests {
         assert!(render(&[], Trigger::PostToolUse).is_none());
     }
 
+    /// Recency bias gives the last item the most weight, so the newest rating must land
+    /// there. The first version of this module had it exactly backwards.
     #[test]
-    fn approvals_and_rejections_are_kept_apart() {
+    fn the_newest_rating_is_listed_last() {
         let ratings = vec![
-            r("a", Verdict::Up, "2026-08-20T12:04:11Z", None, "checked the format before writing the parser"),
-            r("b", Verdict::Down, "2026-08-20T12:04:19Z", Some("wrong file, use debug"), "Bash(grep -c thinking)"),
+            r("old", Verdict::Up, "2026-08-20T12:00:00Z", None, "the older moment"),
+            r("new", Verdict::Down, "2026-08-20T12:05:00Z", None, "the newer moment"),
         ];
         let out = render(&ratings, Trigger::PostToolUse).unwrap();
-
-        let approved = out.find("APPROVED").unwrap();
-        let rejected = out.find("REJECTED").unwrap();
-        assert!(approved < rejected, "approvals should come first");
-
-        // each item lands in its own section
-        let up_section = &out[approved..rejected];
-        assert!(up_section.contains("checked the format"));
-        assert!(!up_section.contains("grep -c thinking"));
-
-        assert!(out.contains("wrong file, use debug"), "the note is the durable artifact");
-        assert!(out.contains("12:04:19"), "timestamps are shortened, not dropped");
-    }
-
-    /// Guards against the four failure modes named at the top of this module.
-    #[test]
-    fn every_guard_clause_is_present() {
-        let out = render(&[r("a", Verdict::Down, "2026-08-20T12:00:00Z", None, "x")], Trigger::PostToolUse)
-            .unwrap();
-        assert!(out.contains("not a message in the conversation"), "must not read as a user turn");
-        assert!(out.contains("Do not reply"), "must not stop to acknowledge");
-        assert!(out.contains("do not restart work that is already sound"), "must not over-correct");
-        assert!(out.contains("Do not seek further approval"), "must not become sycophantic");
-        assert!(out.contains("Infer the general behaviour"), "must generalise, not overfit");
+        assert!(
+            out.find("the older moment").unwrap() < out.find("the newer moment").unwrap(),
+            "newest must occupy the final, highest-weight position"
+        );
     }
 
     #[test]
-    fn the_stop_trigger_adds_the_keep_going_clause() {
-        let one = [r("a", Verdict::Down, "2026-08-20T12:00:00Z", None, "x")];
-        assert!(render(&one, Trigger::Stop).unwrap().contains("keep going instead of stopping"));
-        assert!(!render(&one, Trigger::PostToolUse).unwrap().contains("keep going instead of stopping"));
-    }
-
-    #[test]
-    fn overflow_keeps_the_newest_and_drops_the_stalest() {
+    fn overflow_drops_the_stalest_not_the_newest() {
         let many: Vec<Rating> = (0..MAX_PER_INJECTION + 3)
             .map(|i| {
                 r(
@@ -228,10 +278,112 @@ mod tests {
             .collect();
 
         let out = render(&many, Trigger::PostToolUse).unwrap();
-        let shown = out.matches("moment number").count();
-        assert_eq!(shown, MAX_PER_INJECTION);
+        assert_eq!(out.matches("moment number").count(), MAX_PER_INJECTION);
         assert!(out.contains(&format!("moment number {}", MAX_PER_INJECTION + 2)), "newest must survive");
-        assert!(!out.contains("moment number 0"), "stalest should be the one dropped");
+        assert!(!out.contains("moment number 0"), "stalest should be dropped");
+    }
+
+    /// A rejection with no explanation must not read as a mandate to change strategy.
+    #[test]
+    fn a_bare_rejection_stays_narrow() {
+        let out = render(&[r("a", Verdict::Down, "2026-08-20T12:00:00Z", None, "Bash(grep -c x)")], Trigger::PostToolUse)
+            .unwrap();
+        assert!(out.contains("do not repeat this exact action"));
+        assert!(out.contains("narrow rather than as a verdict on the wider approach"));
+    }
+
+    /// When the human typed a reason, that reason is the signal, verbatim.
+    #[test]
+    fn a_note_is_used_verbatim_and_paired_with_a_replacement() {
+        let out = render(
+            &[r("a", Verdict::Down, "2026-08-20T12:00:00Z", Some("use the debug log instead"), "Bash(grep x)")],
+            Trigger::PostToolUse,
+        )
+        .unwrap();
+        assert!(out.contains("stop doing this; instead: use the debug log instead"));
+    }
+
+    /// The register that keeps the agent from surfacing the block instead of absorbing it.
+    #[test]
+    fn the_voice_is_observational_not_a_spoofed_command() {
+        let out = render(&[r("a", Verdict::Up, "2026-08-20T12:00:00Z", None, "x")], Trigger::PostToolUse).unwrap();
+        assert!(out.contains("Generated by margin, not written by the user"));
+        assert!(out.contains("not a conversational turn"));
+        assert!(!out.contains("SYSTEM:"), "must not impersonate a system directive");
+        assert!(!out.contains("You must"), "must not issue second-person commands");
+    }
+
+    #[test]
+    fn guards_against_over_correction_and_sycophancy() {
+        let out = render(&[r("a", Verdict::Down, "2026-08-20T12:00:00Z", None, "x")], Trigger::PostToolUse).unwrap();
+        assert!(out.contains("soft priors from a small sample"));
+        assert!(out.contains("do not overhaul an approach that is otherwise working"));
+        // no tally and no praise words, which are the gameable signals
+        for banned in ["great job", "well done", "score", "total:"] {
+            assert!(!out.to_lowercase().contains(banned), "found gameable language: {banned}");
+        }
+    }
+
+    /// A conflict is the same behaviour judged both ways, not merely a batch containing one
+    /// of each. The naive version fired on nearly every batch, which is misinformation.
+    #[test]
+    fn only_a_genuine_conflict_is_named() {
+        let same_subject = vec![
+            rs("a", Verdict::Up, "2026-08-20T12:00:00Z", None, "one Bash call", Some("did:Bash")),
+            rs("b", Verdict::Down, "2026-08-20T12:01:00Z", None, "another Bash call", Some("did:Bash")),
+        ];
+        assert!(render(&same_subject, Trigger::PostToolUse)
+            .unwrap()
+            .contains("about did:Bash and point in opposite directions"));
+
+        // approving some prose while rejecting a tool call is not a contradiction
+        let different_subjects = vec![
+            rs("a", Verdict::Up, "2026-08-20T12:00:00Z", None, "good explanation", Some("said")),
+            rs("b", Verdict::Down, "2026-08-20T12:01:00Z", None, "bad grep", Some("did:Bash")),
+        ];
+        assert!(!render(&different_subjects, Trigger::PostToolUse)
+            .unwrap()
+            .contains("opposite directions"));
+
+        let agreeing = vec![r("a", Verdict::Up, "2026-08-20T12:00:00Z", None, "one way")];
+        assert!(!render(&agreeing, Trigger::PostToolUse).unwrap().contains("opposite directions"));
+    }
+
+    #[test]
+    fn the_stop_trigger_tells_the_agent_not_to_finish_prematurely() {
+        let one = [r("a", Verdict::Down, "2026-08-20T12:00:00Z", None, "x")];
+        assert!(render(&one, Trigger::Stop).unwrap().contains("continue instead of stopping"));
+        assert!(!render(&one, Trigger::PostToolUse).unwrap().contains("continue instead of stopping"));
+    }
+
+    /// Attention dilution, not the platform's 10k character cap, is the real constraint.
+    #[test]
+    fn a_full_injection_stays_within_the_attention_budget() {
+        let many: Vec<Rating> = (0..MAX_PER_INJECTION)
+            .map(|i| {
+                r(
+                    &format!("m{i}"),
+                    if i % 2 == 0 { Verdict::Up } else { Verdict::Down },
+                    &format!("2026-08-20T12:00:{:02}Z", i),
+                    Some("a reasonably wordy explanation of what should have happened instead"),
+                    &"x".repeat(400),
+                )
+            })
+            .collect();
+
+        let out = render(&many, Trigger::Stop).unwrap();
+        let words = out.split_whitespace().count();
+        assert!(words < 300, "injection grew to {words} words; budget is under 300");
+    }
+
+    #[test]
+    fn a_long_anchor_is_truncated_without_splitting_a_character() {
+        let out = render(
+            &[r("a", Verdict::Up, "2026-08-20T12:00:00Z", None, &"é".repeat(500))],
+            Trigger::PostToolUse,
+        )
+        .unwrap();
+        assert!(out.contains('…'), "long anchors should be clipped");
     }
 
     #[test]

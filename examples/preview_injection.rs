@@ -13,6 +13,7 @@ fn main() {
             note: None,
             at: "2026-08-20T12:04:11Z".into(),
             preview: Some("I'll check the transcript format first before writing the parser.".into()),
+            subject: Some("said".into()),
         },
         Rating {
             moment: MomentId::new(Harness::ClaudeCode, "sess", "85b72af4", 2),
@@ -20,6 +21,7 @@ fn main() {
             note: Some("wrong file, the thinking is not in debug logs".into()),
             at: "2026-08-20T12:04:19Z".into(),
             preview: Some("Bash(grep -c thinking ~/.claude/debug/*.txt)".into()),
+            subject: Some("did:Bash".into()),
         },
     ];
 

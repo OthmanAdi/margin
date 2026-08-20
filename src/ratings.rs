@@ -53,6 +53,14 @@ pub struct Rating {
     /// transcript is ever rewritten, and gives the injected text something to quote.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
+    /// Coarse label for what was rated: `said`, `thought`, or `did:Bash`.
+    ///
+    /// Exists so two ratings can be told to be about the same kind of behaviour. Without
+    /// it, "these signals conflict" would fire on any batch containing one approval and one
+    /// rejection, which is nearly every batch, and telling an agent that two unrelated
+    /// judgments contradict each other is worse than saying nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,6 +204,7 @@ mod tests {
             note: None,
             at: "2026-08-20T12:00:00Z".into(),
             preview: Some(format!("preview of {entry}")),
+            subject: Some("said".into()),
         }
     }
 
