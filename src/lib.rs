@@ -4,11 +4,13 @@
 //! delivered. It records what each harness actually writes and what actually reaches a live
 //! turn, measured rather than assumed.
 
+pub mod discover;
 pub mod harness;
 pub mod inject;
 pub mod moment;
 pub mod ratings;
 pub mod tail;
+pub mod ui;
 
 pub use moment::{Harness, Moment, MomentId, MomentKind};
 pub use ratings::{Rating, Store, Verdict};
