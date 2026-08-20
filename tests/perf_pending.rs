@@ -124,7 +124,9 @@ fn full_session_simulation_pending_called_every_tool_call() {
         let pending = store.pending().unwrap();
         if !pending.is_empty() {
             total_pending_seen += pending.len();
-            store.mark_delivered(&pending, "2026-08-20T12:00:01Z").unwrap();
+            store
+                .mark_delivered(&pending, "2026-08-20T12:00:01Z")
+                .unwrap();
         }
     }
     let elapsed = start.elapsed();

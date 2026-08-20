@@ -6,6 +6,7 @@
 
 pub mod discover;
 pub mod harness;
+pub mod humanize;
 pub mod inject;
 pub mod moment;
 pub mod ratings;

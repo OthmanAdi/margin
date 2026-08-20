@@ -21,6 +21,12 @@ pub struct Session {
     pub harness: Harness,
     pub path: PathBuf,
     pub modified: SystemTime,
+    /// Working directory the session ran in, when the harness records one.
+    ///
+    /// Claude Code encodes it in the project directory name. Codex writes it into
+    /// `session_meta`, which is only readable by opening the file, so this is None until
+    /// something asks.
+    pub cwd: Option<PathBuf>,
 }
 
 impl Session {
@@ -83,10 +89,12 @@ pub fn claude_sessions(home: &Path, cwd: Option<&Path>) -> Vec<Session> {
                 continue;
             }
             if let Some(modified) = mtime(&path) {
+                let cwd = cwd.map(PathBuf::from);
                 out.push(Session {
                     harness: Harness::ClaudeCode,
                     path,
                     modified,
+                    cwd,
                 });
             }
         }
@@ -95,8 +103,52 @@ pub fn claude_sessions(home: &Path, cwd: Option<&Path>) -> Vec<Session> {
     out
 }
 
+/// The working directory a Codex rollout ran in, from its `session_meta` line.
+///
+/// Only the first line is read. A rollout can be megabytes and this runs once per file when
+/// listing sessions, so parsing the whole thing to recover one field would make `margin
+/// sessions` visibly slow for no benefit.
+fn codex_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).ok()?;
+    let mut first = String::new();
+    BufReader::new(file).read_line(&mut first).ok()?;
+    let v: serde_json::Value = serde_json::from_str(first.trim()).ok()?;
+    if v.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
+        return None;
+    }
+    let cwd = v.get("payload")?.get("cwd")?.as_str()?;
+    Some(PathBuf::from(cwd))
+}
+
 /// Codex rollouts. The tree is `sessions/YYYY/MM/DD/`, so this walks three levels rather
 /// than assuming a flat directory.
+///
+/// Pass a `cwd` to keep only rollouts that ran there. Codex's directory layout is by date,
+/// not by project, so the filter has to come from inside each file.
+pub fn codex_sessions_in(home: &Path, cwd: Option<&Path>) -> Vec<Session> {
+    let mut all = codex_sessions(home);
+    if let Some(want) = cwd {
+        all.retain(|s| s.cwd.as_deref().is_some_and(|c| same_dir(c, want)));
+    }
+    all
+}
+
+/// Compare paths the way a user means it: case-insensitively on Windows, and ignoring the
+/// separator style, since Codex writes backslashes and a shell may hand us forward ones.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| {
+        let s = p.to_string_lossy().replace('/', "\\");
+        let s = s.trim_end_matches('\\').to_string();
+        if cfg!(windows) {
+            s.to_lowercase()
+        } else {
+            s
+        }
+    };
+    norm(a) == norm(b)
+}
+
 pub fn codex_sessions(home: &Path) -> Vec<Session> {
     let root = home.join(".codex").join("sessions");
     let mut out = Vec::new();
@@ -110,10 +162,12 @@ pub fn codex_sessions(home: &Path) -> Vec<Session> {
                         continue;
                     }
                     if let Some(modified) = mtime(&path) {
+                        let cwd = codex_cwd(&path);
                         out.push(Session {
                             harness: Harness::Codex,
                             path,
                             modified,
+                            cwd,
                         });
                     }
                 }

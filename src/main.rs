@@ -137,15 +137,23 @@ fn sessions(all: bool, limit: usize) -> Result<()> {
     let found = if all {
         discover::all_sessions(&home)
     } else {
+        // Both halves are scoped to this directory. Codex has no per-project layout, so its
+        // filter comes from the cwd recorded in each rollout's session_meta. Before this,
+        // every Codex rollout on the machine was listed no matter where you ran the command.
         let mut v = discover::claude_sessions(&home, Some(&cwd));
-        v.extend(discover::codex_sessions(&home));
+        v.extend(discover::codex_sessions_in(&home, Some(&cwd)));
         v.sort_by_key(|s| std::cmp::Reverse(s.modified));
         v
     };
 
     if found.is_empty() {
-        println!("No sessions found under {}.", home.display());
-        println!("Start Claude Code or Codex, then run this again.");
+        if all {
+            println!("No sessions found under {}.", home.display());
+            println!("Start Claude Code or Codex, then run this again.");
+        } else {
+            println!("No sessions for {}.", cwd.display());
+            println!("Run margin sessions --all to see every session on this machine.");
+        }
         return Ok(());
     }
 
@@ -301,8 +309,20 @@ fn margin_segment(payload: &str) -> Option<String> {
     let store = Store::for_session(&store_root(&home), Harness::ClaudeCode.as_str(), session_id);
 
     let all = store.all().ok()?;
+
+    // Nothing rated yet is the state a new user spends their first minutes in. Printing
+    // nothing at all there means an installed margin and a broken one look identical, which
+    // is exactly the moment someone concludes the tool does not work. Once the hook has
+    // fired, say so quietly; before that, stay out of the way.
     if all.is_empty() {
-        return None;
+        return store.hook_seen().then(|| {
+            let plain = std::env::var_os("NO_COLOR").is_some();
+            if plain {
+                "margin ready".to_string()
+            } else {
+                "[38;5;245mmargin ready[0m".to_string()
+            }
+        });
     }
     let pending = store.pending().unwrap_or_default();
     let up = pending.iter().filter(|r| r.verdict == Verdict::Up).count();

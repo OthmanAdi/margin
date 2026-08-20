@@ -128,50 +128,35 @@ pub struct Moment {
 }
 
 impl Moment {
-    /// One-line summary for a card, collapsed to a single line and clipped to `width`.
+    /// One line a human can judge in about a second.
+    ///
+    /// Not a dump of the underlying data. A tool call renders as what it did, prose renders
+    /// as its first sentence, and reasoning we could not read says so plainly. See
+    /// `crate::humanize` for why: rows that cannot be told apart defeat a tool whose whole
+    /// interaction is picking one row.
     pub fn preview(&self, width: usize) -> String {
-        let raw = match &self.kind {
-            MomentKind::Asked { text } | MomentKind::Said { text } => text.clone(),
-            MomentKind::Did { tool, input, .. } => format!("{tool}({input})"),
-            MomentKind::Thought { text: Some(t), .. } => t.clone(),
-            MomentKind::Thought { text: None, bytes } => format!("<not persisted, {bytes} B>"),
-        };
-        clip(&collapse_ws(&raw), width)
-    }
-}
-
-fn collapse_ws(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_ws = false;
-    for ch in s.chars() {
-        if ch.is_whitespace() {
-            if !in_ws {
-                out.push(' ');
-                in_ws = true;
+        match &self.kind {
+            MomentKind::Asked { text } | MomentKind::Said { text } => {
+                crate::humanize::first_sentence(text, width)
             }
-        } else {
-            out.push(ch);
-            in_ws = false;
+            MomentKind::Did { tool, input, .. } => {
+                crate::humanize::clip(&crate::humanize::tool(tool, input), width)
+            }
+            MomentKind::Thought { text: Some(t), .. } => crate::humanize::first_sentence(t, width),
+            MomentKind::Thought { text: None, bytes } => {
+                crate::humanize::clip(&format!("reasoned, {}", human_bytes(*bytes)), width)
+            }
         }
     }
-    out.trim().to_string()
 }
 
-/// Clip by chars, not bytes, so a multi-byte character is never split.
-fn clip(s: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
+/// Sizes a person reads without counting digits.
+fn human_bytes(n: usize) -> String {
+    if n >= 1024 {
+        format!("{:.1} kB", n as f64 / 1024.0)
+    } else {
+        format!("{n} B")
     }
-    let n = s.chars().count();
-    if n <= width {
-        return s.to_string();
-    }
-    if width == 1 {
-        return "…".to_string();
-    }
-    let mut out: String = s.chars().take(width - 1).collect();
-    out.push('…');
-    out
 }
 
 #[cfg(test)]
@@ -209,8 +194,11 @@ mod tests {
         // Clipping by bytes here would produce invalid UTF-8 and panic.
         let m = said("héllo wörld ✅ ünïcode");
         let out = m.preview(8);
-        assert_eq!(out.chars().count(), 8);
+        // clipping backs off to a word boundary, so the result may be shorter than the
+        // budget; what matters is that it never exceeds it and never splits a character
+        assert!(out.chars().count() <= 8, "got {out:?}");
         assert!(out.ends_with('…'));
+        assert!(out.is_char_boundary(out.len()));
     }
 
     #[test]
@@ -224,7 +212,8 @@ mod tests {
                 bytes: 4524,
             },
         };
-        assert_eq!(m.preview(80), "<not persisted, 4524 B>");
+        // says what happened in human terms rather than exposing the storage detail
+        assert_eq!(m.preview(80), "reasoned, 4.4 kB");
     }
 
     #[test]
