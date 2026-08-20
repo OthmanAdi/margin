@@ -8,6 +8,7 @@ pub mod harness;
 pub mod inject;
 pub mod moment;
 pub mod ratings;
+pub mod tail;
 
 pub use moment::{Harness, Moment, MomentId, MomentKind};
 pub use ratings::{Rating, Store, Verdict};
