@@ -67,6 +67,52 @@ enum Signal {
     Quit,
 }
 
+/// How much of the run to show.
+///
+/// A transcript is mostly machinery. Reading every tool call is how you audit a run; reading
+/// only the conversation is how you judge whether the agent is being sensible. Those are
+/// different jobs and they want different amounts of noise, so this is a setting rather than
+/// a compromise baked into one layout.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// Only what was said, by either side. Reads like the chat itself: your messages and the
+    /// agent's replies, nothing else.
+    Mirror,
+    /// The conversation plus what the agent did. Reasoning markers are dropped, since on
+    /// Claude Code they can never carry text anyway.
+    #[default]
+    Medium,
+    /// Everything, including a marker for every stretch of reasoning.
+    Verbose,
+}
+
+impl View {
+    fn label(self) -> &'static str {
+        match self {
+            View::Mirror => "mirror",
+            View::Medium => "medium",
+            View::Verbose => "verbose",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            View::Mirror => View::Medium,
+            View::Medium => View::Verbose,
+            View::Verbose => View::Mirror,
+        }
+    }
+
+    /// Whether a moment belongs in this view.
+    fn shows(self, kind: &MomentKind) -> bool {
+        match self {
+            View::Mirror => matches!(kind, MomentKind::Said { .. } | MomentKind::Asked { .. }),
+            View::Medium => !matches!(kind, MomentKind::Thought { .. }),
+            View::Verbose => true,
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 enum Mode {
     #[default]
@@ -98,6 +144,13 @@ struct App {
     hook_live: bool,
     /// Row index and expiry of the confirmation flash, set on a rating.
     flash: Option<(usize, Instant)>,
+    view: View,
+    /// Indices into `moments` that the current view shows, in order.
+    ///
+    /// The list widget and every key act on this, not on `moments`. Filtering by rebuilding a
+    /// parallel index keeps ratings anchored to the real moment: hiding a row must never
+    /// change what a keypress targets.
+    visible: Vec<usize>,
     /// How many ratings were still undelivered when the session ended, if it has ended.
     ///
     /// The one real deadline this tool has. Transcripts and ratings are permanent, but a hook
@@ -130,8 +183,74 @@ impl App {
         }
     }
 
-    fn rateable_count(&self) -> usize {
-        self.moments.iter().filter(|m| m.kind.rateable()).count()
+    /// The moment the cursor is on, or None when the view is empty.
+    fn selected(&self) -> Option<&Moment> {
+        let i = self.list.selected()?;
+        self.moments.get(*self.visible.get(i)?)
+    }
+
+    /// Recompute which moments the current view shows.
+    ///
+    /// The cursor follows the moment it was on rather than the row number it occupied. A
+    /// filter change that silently moved the cursor to a different moment would be the same
+    /// wrong-target bug as the old auto-follow, just triggered by a keypress instead of by
+    /// the agent. When the moment it was on is filtered out, it lands on the nearest one
+    /// still shown.
+    fn rebuild_visible(&mut self) {
+        let anchor = self.selected().map(|m| m.id.clone());
+        let previous = self
+            .list
+            .selected()
+            .and_then(|i| self.visible.get(i).copied());
+
+        self.visible = self
+            .moments
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| self.view.shows(&m.kind))
+            .map(|(i, _)| i)
+            .collect();
+
+        let target = anchor
+            .and_then(|id| self.visible.iter().position(|&i| self.moments[i].id == id))
+            .or_else(|| {
+                // The anchored moment is hidden now. Land on the nearest still-visible one
+                // at or before where it was, so the cursor stays roughly where the eye is.
+                let prev = previous?;
+                self.visible
+                    .iter()
+                    .rposition(|&i| i <= prev)
+                    .or(if self.visible.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    })
+            })
+            .or(if self.visible.is_empty() {
+                None
+            } else {
+                Some(self.visible.len() - 1)
+            });
+
+        self.list.select(target);
+        self.recount_unseen();
+    }
+
+    fn recount_unseen(&mut self) {
+        self.unseen = self
+            .visible
+            .len()
+            .saturating_sub(self.list.selected().map_or(0, |i| i + 1));
+    }
+
+    fn cycle_view(&mut self) {
+        self.view = self.view.next();
+        self.rebuild_visible();
+        self.status = Some(match self.view {
+            View::Mirror => "mirror: only what was said, like the chat itself".into(),
+            View::Medium => "medium: what was said and done, reasoning hidden".into(),
+            View::Verbose => "verbose: everything, including reasoning markers".into(),
+        });
     }
 
     /// Absorb newly appended transcript lines.
@@ -179,20 +298,19 @@ impl App {
         // a row and pressing a key means the keypress rates something they never saw. Wrong
         // target is the worst failure this tool has, so new moments now only ever appear
         // below the cursor and `g` is the one way to jump.
-        if self.list.selected().is_none() && !self.moments.is_empty() {
-            self.list.select(Some(self.moments.len() - 1));
+        let had_cursor = self.list.selected().is_some();
+        self.rebuild_visible();
+        if !had_cursor && !self.visible.is_empty() {
+            self.list.select(Some(self.visible.len() - 1));
+            self.recount_unseen();
         }
-        self.unseen = self
-            .moments
-            .len()
-            .saturating_sub(self.list.selected().map_or(0, |i| i + 1));
     }
 
     fn move_by(&mut self, delta: isize) {
-        if self.moments.is_empty() {
+        if self.visible.is_empty() {
             return;
         }
-        let last = self.moments.len() - 1;
+        let last = self.visible.len() - 1;
         let cur = self.list.selected().unwrap_or(0) as isize;
         let next = (cur + delta).clamp(0, last as isize) as usize;
         self.list.select(Some(next));
@@ -203,7 +321,12 @@ impl App {
         let Some(index) = self.list.selected() else {
             return;
         };
-        let Some(moment) = self.moments.get(index) else {
+        // Through the filter, never straight into `moments`. A row number is a position in
+        // the current view; the rating has to land on the moment that row stands for.
+        let Some(&real) = self.visible.get(index) else {
+            return;
+        };
+        let Some(moment) = self.moments.get(real) else {
             return;
         };
 
@@ -281,6 +404,8 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         hook_live: false,
         flash: None,
         stranded: None,
+        view: View::default(),
+        visible: Vec::new(),
     };
 
     // Ratings already on disk must reappear as marks. Keeping verdicts only in memory means
@@ -464,12 +589,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::PageUp => app.move_by(-10),
 
         KeyCode::Char('g') => {
-            if !app.moments.is_empty() {
-                app.list.select(Some(app.moments.len() - 1));
+            if !app.visible.is_empty() {
+                app.list.select(Some(app.visible.len() - 1));
             }
             app.unseen = 0;
             app.status = Some("jumped to the newest moment".into());
         }
+
+        KeyCode::Char('v') => app.cycle_view(),
 
         KeyCode::Char('f') => app.rate(Verdict::Up, None),
         KeyCode::Char('d') => app.rate(Verdict::Down, None),
@@ -488,20 +615,22 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
 fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    // The bottom is three separate zones, not three adjacent lines. Previously the detail
+    // text, the status message and the key legend sat flush against each other, so the thing
+    // you were about to rate blurred into the instructions for rating it.
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(3),    // moments
-        Constraint::Length(4), // what is selected, in full
-        Constraint::Length(1), // status
-        Constraint::Length(1), // keys
+        Constraint::Length(1), // breathing room
+        Constraint::Length(3), // what is selected, on its own ground
+        Constraint::Length(1), // keys, visually quietest
     ])
     .split(area);
 
     draw_header(f, chunks[0], app);
     draw_moments(f, chunks[1], app);
-    draw_detail(f, chunks[2], app);
-    draw_status(f, chunks[3], app);
-    draw_keys(f, chunks[4]);
+    draw_detail(f, chunks[3], app);
+    draw_keys(f, chunks[4], app);
 
     if let Mode::Noting { buffer, .. } = &app.mode {
         draw_note_prompt(f, area, buffer);
@@ -516,9 +645,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(short_id(&app.session_id), Style::new().fg(DIM)),
         Span::raw("  "),
         Span::styled(
-            format!("{} moments", app.rateable_count()),
+            // Both halves count the same population. Dividing visible rows by the rateable
+            // count produced "11/10 shown" in verbose, since the user's own turns are visible
+            // but not rateable.
+            format!("{}/{} shown", app.visible.len(), app.moments.len()),
             Style::new().fg(DIM),
         ),
+        Span::raw("  "),
+        Span::styled(app.view.label(), Style::new().fg(Color::Magenta)),
         Span::raw("  "),
         Span::styled(
             format!("{rated} rated"),
@@ -543,7 +677,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
-    if app.moments.is_empty() {
+    if app.visible.is_empty() {
         // Never look idle when something is wrong. A parse that yields nothing is the most
         // likely symptom of a harness changing its format.
         let msg = if app.parsed_lines == 0 {
@@ -581,8 +715,9 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
     let flashing = app.flash.filter(|(_, until)| *until > now).map(|(i, _)| i);
 
     let items: Vec<ListItem> = app
-        .moments
+        .visible
         .iter()
+        .map(|&real| &app.moments[real])
         .enumerate()
         .map(|(idx, m)| {
             let key = m.id.to_string();
@@ -645,8 +780,8 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
     // Only when there is something to scroll. A full-height thumb on a list that fits is
     // noise, and drawn over the border it reads as a rendering bug.
     let viewport = area.height.saturating_sub(2) as usize;
-    if app.moments.len() > viewport {
-        let mut sb = ScrollbarState::new(app.moments.len().saturating_sub(viewport))
+    if app.visible.len() > viewport {
+        let mut sb = ScrollbarState::new(app.visible.len().saturating_sub(viewport))
             .position(app.list.selected().unwrap_or(0));
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -664,38 +799,50 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    let text = match (&app.status, app.unseen) {
-        (Some(s), _) => Span::styled(format!("  {s}"), Style::new().fg(ACCENT)),
-        (None, 0) => Span::styled("  at the newest moment", Style::new().fg(DIM)),
-        (None, n) => Span::styled(
-            format!("  {n} newer below, g to jump"),
-            Style::new().fg(WARN),
-        ),
-    };
-    f.render_widget(Paragraph::new(Line::from(text)), area);
-}
-
-fn draw_keys(f: &mut Frame, area: Rect) {
+/// The legend, plus whatever the app most recently wanted to say.
+///
+/// Both live on the quietest line on screen. A status message is transient and a legend is
+/// reference material; neither should compete with the row being decided about.
+fn draw_keys(f: &mut Frame, area: Rect, app: &App) {
     let key = Style::new().fg(ACCENT).bold();
     let lbl = Style::new().fg(DIM);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  j k", key),
-            Span::styled(" move   ", lbl),
-            Span::styled("f", key),
-            Span::styled(" good   ", lbl),
-            Span::styled("d", key),
-            Span::styled(" bad   ", lbl),
-            Span::styled("D", key),
-            Span::styled(" bad + why   ", lbl),
-            Span::styled("g", key),
-            Span::styled(" newest   ", lbl),
-            Span::styled("q", key),
-            Span::styled(" quit", lbl),
-        ])),
-        area,
-    );
+    let legend = Line::from(vec![
+        Span::styled("  j k", key),
+        Span::styled(" move   ", lbl),
+        Span::styled("f", key),
+        Span::styled(" good   ", lbl),
+        Span::styled("d", key),
+        Span::styled(" bad   ", lbl),
+        Span::styled("D", key),
+        Span::styled(" bad + why   ", lbl),
+        Span::styled("g", key),
+        Span::styled(" newest   ", lbl),
+        Span::styled("v", key),
+        Span::styled(" view   ", lbl),
+        Span::styled("q", key),
+        Span::styled(" quit", lbl),
+    ]);
+    let legend_width: usize = legend.spans.iter().map(|s| s.content.chars().count()).sum();
+    f.render_widget(Paragraph::new(legend), area);
+
+    // Right-aligned on the same line: a confirmation when there is one, otherwise how much
+    // is waiting below the cursor.
+    let right = match (&app.status, app.unseen) {
+        (Some(s), _) => Some(Span::styled(format!("{s}  "), Style::new().fg(ACCENT))),
+        (None, 0) => None,
+        (None, n) => Some(Span::styled(
+            format!("{n} newer below, g to jump  "),
+            Style::new().fg(WARN),
+        )),
+    };
+
+    // Only when it fits. Right-aligning over a legend that already reaches that far
+    // overprints it, which is how "g newest" turned into "gnoted, the agent hears it…".
+    if let Some(span) = right {
+        if span.content.chars().count() + legend_width + 2 <= area.width as usize {
+            f.render_widget(Paragraph::new(Line::from(span).right_aligned()), area);
+        }
+    }
 }
 
 fn draw_note_prompt(f: &mut Frame, area: Rect, buffer: &str) {
@@ -733,6 +880,9 @@ const BAD: Color = Color::Red;
 /// Selection background. Dark enough that the per-column colours still read on top of it,
 /// light enough to locate instantly in a dense list.
 const SELECT: Color = Color::Indexed(237);
+/// Ground for the detail panel, one step off the terminal background so it reads as a
+/// different surface without becoming a second focal point.
+const PANEL: Color = Color::Indexed(235);
 /// Confirmation wash after an approval and after a rejection.
 const FLASH_GOOD: Color = Color::Indexed(114);
 const FLASH_BAD: Color = Color::Indexed(174);
@@ -794,7 +944,23 @@ fn now_rfc3339() -> String {
 /// Uses the committed Claude Code fixture, so the picture shows real parsed moments,
 /// including the thought Claude Code never persisted. Two ratings are pre-set to show what
 /// an approval and a rejection with a note look like.
+/// Draw the demo scene in a named view, for comparing the levels.
+pub fn draw_demo_view(f: &mut Frame, view: &str) {
+    draw_demo_inner(
+        f,
+        match view {
+            "mirror" => View::Mirror,
+            "verbose" => View::Verbose,
+            _ => View::Medium,
+        },
+    )
+}
+
 pub fn draw_demo(f: &mut Frame) {
+    draw_demo_inner(f, View::default())
+}
+
+fn draw_demo_inner(f: &mut Frame, view: View) {
     let fixture = include_str!("../fixtures/claude-code/session-basic.jsonl");
     let mut moments = harness::parse(Harness::ClaudeCode, fixture);
 
@@ -841,7 +1007,11 @@ pub fn draw_demo(f: &mut Frame) {
         hook_live: true,
         flash: None,
         stranded: None,
+        view,
+        visible: Vec::new(),
     };
+    app.rebuild_visible();
+    app.list.select(Some(app.visible.len().saturating_sub(2)));
     draw(f, &mut app);
 }
 
@@ -906,7 +1076,7 @@ fn demo_extra_moments(from: usize) -> Vec<Moment> {
 /// guess. This pane removes the guess: it shows the selected moment wrapped, with what it
 /// was and what came back.
 fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
-    let Some(m) = app.list.selected().and_then(|i| app.moments.get(i)) else {
+    let Some(m) = app.selected() else {
         return;
     };
     let key = m.id.to_string();
@@ -967,12 +1137,13 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App) {
         )));
     }
 
+    // A filled panel rather than a rule. One border line reads as just another row of the
+    // list; a block of different ground reads as a different thing, which is the whole point:
+    // this is what you are about to rate, not more of what you are scrolling through.
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .border_style(Style::new().fg(DIM)),
-        ),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .style(Style::new().bg(PANEL)),
         area,
     );
 }
@@ -1017,7 +1188,21 @@ mod tests {
             hook_live: false,
             flash: None,
             stranded: None,
+            view: View::default(),
+            visible: Vec::new(),
         }
+    }
+
+    fn thinking_line(uuid: &str) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": uuid,
+            "sessionId": "t",
+            "timestamp": "2026-08-20T12:00:00Z",
+            "message": { "role": "assistant", "content": [
+                { "type": "thinking", "thinking": "", "signature": "xxxx" } ] }
+        })
+        .to_string()
     }
 
     fn line(uuid: &str, text: &str) -> String {
@@ -1033,6 +1218,55 @@ mod tests {
 
     /// The worst bug this tool can have is rating the wrong moment. New moments arriving
     /// must never move the cursor out from under a keypress.
+    /// Filtering must never change what a keypress targets. Hiding rows moves row numbers,
+    /// so a rating that resolved through the row index rather than the filter would land on
+    /// a different moment entirely.
+    #[test]
+    fn changing_view_keeps_the_cursor_on_the_same_moment() {
+        let mut app = app_for_test(Vec::new());
+        app.absorb(&[
+            line("a", "first thing said"),
+            thinking_line("b"),
+            line("c", "second thing said"),
+        ]);
+        app.view = View::Verbose;
+        app.rebuild_visible();
+
+        // aim at the prose that comes after the reasoning marker
+        app.list.select(Some(2));
+        let aimed = app.selected().unwrap().id.clone();
+
+        // hiding the reasoning row shifts every row number after it
+        app.cycle_view();
+        assert_eq!(app.view, View::Mirror);
+        assert_eq!(
+            app.selected().unwrap().id,
+            aimed,
+            "the cursor followed a row number instead of the moment"
+        );
+    }
+
+    #[test]
+    fn each_view_shows_what_it_promises() {
+        let mut app = app_for_test(Vec::new());
+        app.absorb(&[line("a", "prose"), thinking_line("b")]);
+
+        app.view = View::Mirror;
+        app.rebuild_visible();
+        assert!(app.visible.iter().all(|&i| matches!(
+            app.moments[i].kind,
+            MomentKind::Said { .. } | MomentKind::Asked { .. }
+        )));
+
+        app.view = View::Verbose;
+        app.rebuild_visible();
+        assert_eq!(
+            app.visible.len(),
+            app.moments.len(),
+            "verbose hides nothing"
+        );
+    }
+
     #[test]
     fn arriving_moments_never_move_the_cursor() {
         let mut app = app_for_test(Vec::new());

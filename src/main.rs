@@ -408,8 +408,16 @@ fn store_root(home: &std::path::Path) -> PathBuf {
 }
 
 fn install(write: bool, settings: Option<PathBuf>, statusline: bool) -> Result<()> {
+    // Forward slashes, even on Windows.
+    //
+    // Hook commands are handed to a shell, and on this platform that shell may be bash rather
+    // than cmd. Bash treats a backslash as an escape, so a Windows path arrives with every
+    // separator eaten: `C:\Users\me\bin\margin.exe` becomes `C:Usersmebinmargin.exe` and the
+    // hook fails with "command not found" on every single tool call, silently, since a hook
+    // failure does not stop the agent. Windows accepts forward slashes in paths and no shell
+    // treats them as an escape.
     let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
+        .map(|p| p.display().to_string().replace('\\', "/"))
         .unwrap_or_else(|_| "margin".into());
 
     let config = serde_json::json!({

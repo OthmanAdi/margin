@@ -218,16 +218,19 @@ impl Store {
         // synchronously inside the agent's process on every single tool call. The vec is
         // kept so pending stays in rating order, oldest first, which the injected text
         // depends on.
+        // Collapse to the latest revision per moment FIRST, then decide whether that one has
+        // been delivered.
+        //
+        // Doing it the other way round is a live context-poisoning bug rather than a
+        // theoretical one. Filtering delivered revisions before collapsing means a moment
+        // rated five times gives up its revisions one per hook call: the newest goes out, is
+        // marked delivered, and the next call surfaces the one before it as though it were
+        // fresh. Observed walking backwards through 18:57:46, :45, :43 on consecutive tool
+        // calls, re-injecting the same moment with a flip-flopping verdict.
         let mut latest: Vec<Rating> = Vec::new();
         let mut seen: HashMap<MomentId, usize> = HashMap::new();
 
         for r in read_jsonl::<Rating>(&self.ratings_path()) {
-            if delivered.contains(&(r.moment.clone(), r.at.clone())) {
-                continue;
-            }
-            if legacy.get(&r.moment).is_some_and(|cutoff| r.at <= *cutoff) {
-                continue;
-            }
             match seen.get(&r.moment) {
                 // Re-rating keeps the newer verdict in the older position: the user changed
                 // their mind about that moment, they did not have a new thought later.
@@ -238,6 +241,12 @@ impl Store {
                 }
             }
         }
+
+        latest.retain(|r| {
+            let already = delivered.contains(&(r.moment.clone(), r.at.clone()));
+            let covered = legacy.get(&r.moment).is_some_and(|cutoff| r.at <= *cutoff);
+            !already && !covered
+        });
         Ok(latest)
     }
 }
@@ -354,6 +363,52 @@ mod tests {
     /// The dedup used to be a linear scan per rating, which is a cliff rather than a slope:
     /// 960ms for one call at 10k undelivered, paid inside the agent's process on every tool
     /// call. This would take minutes if that regressed.
+    /// A moment rated several times must be retired once, not once per revision.
+    ///
+    /// Filtering delivered revisions before collapsing made a five-times-rated moment give up
+    /// one revision per hook call, re-injecting the same moment with a flip-flopping verdict
+    /// on consecutive tool calls. Seen live.
+    #[test]
+    fn a_moment_rated_many_times_is_delivered_once_and_stays_gone() {
+        let root = tmp();
+        let s = Store::for_session(&root, "claude-code", "sess");
+
+        // the user changes their mind five times about the same moment
+        for (i, v) in [
+            Verdict::Up,
+            Verdict::Up,
+            Verdict::Down,
+            Verdict::Down,
+            Verdict::Up,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut r = rating("same", v);
+            r.at = format!("2026-08-20T18:57:4{i}Z");
+            s.record(&r).unwrap();
+        }
+
+        let first = s.pending().unwrap();
+        assert_eq!(
+            first.len(),
+            1,
+            "five revisions of one moment should collapse to one"
+        );
+        assert_eq!(first[0].verdict, Verdict::Up, "the last verdict wins");
+
+        s.mark_delivered(&first, "2026-08-20T19:00:00Z").unwrap();
+
+        // every later call must stay silent rather than walking back through the revisions
+        for _ in 0..5 {
+            assert!(
+                s.pending().unwrap().is_empty(),
+                "an older revision resurfaced after the moment was delivered"
+            );
+        }
+        fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn a_large_backlog_stays_fast() {
         let root = tmp();
