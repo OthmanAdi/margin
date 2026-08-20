@@ -17,7 +17,7 @@
 use crate::moment::MomentId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -103,6 +103,29 @@ impl Store {
         append_line(&self.ratings_path(), &serde_json::to_string(rating)?)
     }
 
+    fn heartbeat_path(&self) -> PathBuf {
+        self.dir.join("hook-seen")
+    }
+
+    /// Record that the hook ran, whether or not it had anything to say.
+    ///
+    /// Exists because of a trap a first-time user hits immediately: Claude Code reads
+    /// `settings.json` at session start, so a hook installed mid-session is silently inert
+    /// until the next restart. Without this, the symptom is a rating that simply never
+    /// arrives and no way to tell whether the tool is broken or merely not loaded yet.
+    ///
+    /// Best effort. The hook runs inside the agent's process and must never fail it, so a
+    /// heartbeat that cannot be written is ignored rather than propagated.
+    pub fn touch_heartbeat(&self) {
+        let _ = fs::create_dir_all(&self.dir);
+        let _ = fs::write(self.heartbeat_path(), b"");
+    }
+
+    /// Whether the hook has fired for this session at all.
+    pub fn hook_seen(&self) -> bool {
+        self.heartbeat_path().exists()
+    }
+
     /// Mark ratings as handed to the agent, so the next hook invocation does not repeat
     /// them. Repeating is the failure mode that poisons a context.
     pub fn mark_delivered(&self, moments: &[MomentId], at: &str) -> Result<()> {
@@ -136,14 +159,29 @@ impl Store {
             .map(|d| d.moment)
             .collect();
 
+        // Index alongside the vec rather than scanning it.
+        //
+        // The obvious `latest.iter_mut().find(...)` is O(n) per rating and therefore O(n^2)
+        // over the file. That is invisible at normal sizes and a cliff at abnormal ones:
+        // measured at 29ms for 535 undelivered ratings and 960ms for 10,000, paid
+        // synchronously inside the agent's process on every single tool call. The vec is
+        // kept so pending stays in rating order, oldest first, which the injected text
+        // depends on.
         let mut latest: Vec<Rating> = Vec::new();
+        let mut seen: HashMap<MomentId, usize> = HashMap::new();
+
         for r in read_jsonl::<Rating>(&self.ratings_path()) {
             if delivered.contains(&r.moment) {
                 continue;
             }
-            match latest.iter_mut().find(|x| x.moment == r.moment) {
-                Some(slot) => *slot = r,
-                None => latest.push(r),
+            match seen.get(&r.moment) {
+                // Re-rating keeps the newer verdict in the older position: the user changed
+                // their mind about that moment, they did not have a new thought later.
+                Some(&idx) => latest[idx] = r,
+                None => {
+                    seen.insert(r.moment.clone(), latest.len());
+                    latest.push(r);
+                }
             }
         }
         Ok(latest)
@@ -256,6 +294,46 @@ mod tests {
         // a later rating still gets through
         s.record(&rating("c", Verdict::Up)).unwrap();
         assert_eq!(s.pending().unwrap().len(), 1);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The dedup used to be a linear scan per rating, which is a cliff rather than a slope:
+    /// 960ms for one call at 10k undelivered, paid inside the agent's process on every tool
+    /// call. This would take minutes if that regressed.
+    #[test]
+    fn a_large_backlog_stays_fast() {
+        let root = tmp();
+        let s = Store::for_session(&root, "claude-code", "sess");
+        for i in 0..8000 {
+            s.record(&rating(&format!("m{i}"), Verdict::Up)).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let pending = s.pending().unwrap();
+        let elapsed = start.elapsed();
+
+        assert_eq!(pending.len(), 8000);
+        assert!(
+            elapsed.as_millis() < 500,
+            "pending() took {elapsed:?} for 8000 undelivered ratings; the quadratic dedup is back"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The injected text weights the last item most, so order is load-bearing, not cosmetic.
+    #[test]
+    fn pending_stays_in_rating_order_even_when_a_moment_is_re_rated() {
+        let root = tmp();
+        let s = Store::for_session(&root, "claude-code", "sess");
+        s.record(&rating("first", Verdict::Up)).unwrap();
+        s.record(&rating("second", Verdict::Up)).unwrap();
+        s.record(&rating("third", Verdict::Up)).unwrap();
+        // change our mind about the first one; it must not jump to the end
+        s.record(&rating("first", Verdict::Down)).unwrap();
+
+        let pending = s.pending().unwrap();
+        let order: Vec<&str> = pending.iter().map(|r| r.moment.entry.as_str()).collect();
+        assert_eq!(order, vec!["first", "second", "third"]);
+        assert_eq!(pending[0].verdict, Verdict::Down);
         fs::remove_dir_all(&root).ok();
     }
 
