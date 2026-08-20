@@ -71,9 +71,35 @@ struct App {
     mode: Mode,
     status: Option<String>,
     parsed_lines: usize,
+    /// Whether the hook has ever fired for this session. Answers the first question a new
+    /// user has, which is whether any of this is actually wired up.
+    hook_live: bool,
 }
 
 impl App {
+    /// Re-read the store so marks survive a restart of the pane.
+    ///
+    /// Called once at startup and again whenever the store is repointed at the real session
+    /// id, which for Codex only becomes known after the first parsed line.
+    fn reload_ratings(&mut self) {
+        let Ok(all) = self.store.all() else { return };
+        self.verdicts.clear();
+        self.notes.clear();
+        for r in all {
+            let key = r.moment.to_string();
+            // Last write wins, matching how the store resolves a moment rated twice.
+            self.verdicts.insert(key.clone(), r.verdict);
+            match r.note {
+                Some(n) if !n.trim().is_empty() => {
+                    self.notes.insert(key, n);
+                }
+                _ => {
+                    self.notes.remove(&key);
+                }
+            }
+        }
+    }
+
     fn rateable_count(&self) -> usize {
         self.moments.iter().filter(|m| m.kind.rateable()).count()
     }
@@ -90,6 +116,7 @@ impl App {
         }
         self.parsed_lines += lines.len();
         let fresh = harness::parse(self.harness, &lines.join("\n"));
+        let mut reload_after = false;
 
         for m in fresh {
             match self.moments.iter_mut().find(|x| x.id == m.id) {
@@ -104,10 +131,15 @@ impl App {
                             self.harness.as_str(),
                             &self.session_id,
                         );
+                        reload_after = true;
                     }
                     self.moments.push(m);
                 }
             }
+        }
+
+        if reload_after {
+            self.reload_ratings();
         }
 
         if self.following && !self.moments.is_empty() {
@@ -206,7 +238,13 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         mode: Mode::default(),
         status: None,
         parsed_lines: 0,
+        hook_live: false,
     };
+
+    // Ratings already on disk must reappear as marks. Keeping verdicts only in memory means
+    // restarting the pane silently loses every judgment the user already made, which reads
+    // as "it forgot" and is the fastest way to stop being trusted.
+    app.reload_ratings();
 
     let initial = tailer.poll()?;
     app.absorb(&initial);
@@ -290,6 +328,7 @@ fn event_loop(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                app.hook_live = app.store.hook_seen();
                 // Some editors and network shares do not produce watch events reliably, so
                 // the idle tick also polls. Cheap: a metadata call that usually returns
                 // "unchanged" and reads nothing.
@@ -397,6 +436,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             format!("{rated} rated"),
             Style::new().fg(if rated > 0 { ACCENT } else { DIM }),
         ),
+        Span::raw("  "),
+        if app.hook_live {
+            Span::styled("hook: live", Style::new().fg(GOOD))
+        } else {
+            // Not an error: it is also what a brand new session looks like before the
+            // agent's first tool call. Saying "not seen yet" avoids crying wolf while still
+            // pointing at the real cause when it is the real cause.
+            Span::styled("hook: not seen yet", Style::new().fg(WARN))
+        },
     ]);
     f.render_widget(Paragraph::new(line), area);
 }
@@ -664,6 +712,7 @@ pub fn draw_demo(f: &mut Frame) {
         mode: Mode::Browsing,
         status: Some("noted, the agent hears it at its next tool call".into()),
         parsed_lines: 42,
+        hook_live: true,
     };
     draw(f, &mut app);
 }

@@ -220,6 +220,38 @@ pub fn describe(kind: &MomentKind) -> String {
     }
 }
 
+/// A short human-visible line for the agent's own window.
+///
+/// `additionalContext` reaches the model but the person never sees it. Without this, pressing
+/// a key in another pane produces no visible effect in the window they are actually looking
+/// at, which reads as broken even when it worked.
+pub fn notice(ratings: &[Rating]) -> String {
+    let up = ratings.iter().filter(|r| r.verdict == Verdict::Up).count();
+    let down = ratings
+        .iter()
+        .filter(|r| r.verdict == Verdict::Down)
+        .count();
+    let mut parts = Vec::new();
+    if up > 0 {
+        parts.push(format!("{up} approved"));
+    }
+    if down > 0 {
+        parts.push(format!("{down} rejected"));
+    }
+    format!("margin: {} delivered to the agent", parts.join(", "))
+}
+
+/// Hook output carrying both the model-facing context and the human-facing line.
+pub fn hook_output_with_notice(context: &str, trigger: Trigger, notice: &str) -> String {
+    serde_json::json!({
+        "systemMessage": notice,
+        "hookSpecificOutput": {
+            "hookEventName": trigger.hook_event_name(),
+            "additionalContext": context,
+        }
+    })
+    .to_string()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
