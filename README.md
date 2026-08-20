@@ -59,15 +59,23 @@ many are waiting, so a moment arriving between your glance and your keypress can
 change what you rate.
 
 ```
-  margin claude-code 9c42ba52  10 moments  2 rated
+  margin claude-code 9c42ba52  7/11 shown  medium  2 rated  hook: live
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│   12:04:02 thought <not persisted, 4524 B>                                   │
-│ + 12:04:11 said    I'll check the transcript format first.                   │
-│ - 12:04:19 did     Bash(grep -c thinking …)  (wrong file, use the debug log) │
-│   12:04:31 said    0 of 71 thinking blocks have readable text.               │
+│    12:04:11 said    I'll check the transcript format first.                  │
+│  - 12:04:19 did     grep -c thinking   (wrong file, use the debug log)       │
+│    12:04:31 said    0 of 71 thinking blocks have readable text.              │
+│▌ + 12:04:52 did     Read the parser to confirm the field names               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-  j k move   f good   d bad   D bad + why   g follow   q quit
+
+▎did 12:04:52  approved   returned 2.1 kB
+Read  src/harness/claude_code.rs
+
+  j k move   f good   d bad   D bad + why   g newest   v view   q quit
 ```
+
+Rows say what happened, not what was typed. `did` rows use the description the agent already
+writes alongside each shell command, which is a better label than anything recoverable by
+parsing the command itself.
 
 ## Install
 
