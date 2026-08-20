@@ -67,7 +67,25 @@ changes nothing. margin's ratings do three things:
 ### 1. Steer the run that is happening now
 
 A rating reaches the agent at its next tool call, through a hook, with nothing typed and no
-turn interrupted. This is what the agent actually receives:
+turn interrupted.
+
+Here is that happening, from [docs/PROOF.md](docs/PROOF.md). The agent is counting files in
+eight directories. It is never told feedback exists and is never asked whether it received
+anything. A rejection is recorded after the second command:
+
+```
+ 1. (Get-ChildItem -Path "alpha" -Filter "*.txt" -File | Measure-Object).Count
+ 2. (Get-ChildItem -Path "beta"  -Filter "*.txt" -File | Measure-Object).Count
+    ← you press d, type "use [System.IO.Directory]::GetFiles instead", agent keeps running
+ 3. [System.IO.Directory]::GetFiles("gamma",   "*.txt").Length
+ 4. [System.IO.Directory]::GetFiles("delta",   "*.txt").Length
+ 5. [System.IO.Directory]::GetFiles("epsilon", "*.txt").Length
+ …through 8
+```
+
+It switched at the first opportunity, finished the task, and never mentioned it.
+
+This is what the agent actually receives:
 
 <div align="center">
 <img src="docs/img/signal.svg" alt="the block of text margin injects into the running agent" width="100%">
@@ -172,6 +190,7 @@ These are enforced, not aspirational. See [CLAUDE.md](CLAUDE.md).
 
 ## Documents
 
+- [docs/PROOF.md](docs/PROOF.md) — a rating changing a live agent's behaviour, and the three runs it took to prove honestly
 - [docs/FEASIBILITY.md](docs/FEASIBILITY.md) — what is possible, measured against real internals
 - [docs/DESIGN.md](docs/DESIGN.md) — shape, data flow, build order
 - [fixtures/README.md](fixtures/README.md) — two harness behaviours that will cost you an afternoon

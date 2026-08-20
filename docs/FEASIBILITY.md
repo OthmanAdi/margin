@@ -92,6 +92,19 @@ Codex has its own hook system (`features.hooks`, currently `false` in this confi
 `PostToolUse` fires constantly during real work, so injected feedback lands within one
 tool call. That is the non-interrupting delivery channel.
 
+### One trap, found the hard way
+
+**`--output-format stream-json` does not surface hook `additionalContext`.** The hook runs,
+its output is accepted, the rating is recorded as delivered, and the injected block appears
+nowhere in the event stream and never reaches the model.
+
+It works in a normal interactive session and in a plain `-p` run. Only the stream-json event
+stream drops it. This is undocumented, and it cost three full test runs before the cause was
+obvious rather than the wording being blamed. Anything verifying hook behaviour must drive
+the agent the way a person does and read the transcript file, not the stream.
+
+The end-to-end behavioural demonstration is in [PROOF.md](PROOF.md).
+
 ## 3. The one real gap: Claude Code thinking text is not persisted
 
 All 71 thinking blocks in the live session, and 177 in another, and 5 in a third, were
