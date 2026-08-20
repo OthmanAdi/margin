@@ -32,11 +32,25 @@ what it **did**, what it **thought**. You move with `j` and `k` and press one ke
 
 | key | does |
 |---|---|
-| `j` `k` | move the cursor |
+| `j` `k` | move the cursor (mouse wheel works too) |
 | `f` | approve |
 | `d` | reject |
 | `D` | reject, then type one line of why |
 | `g` | jump to the newest moment |
+| `v` | cycle how much is shown |
+
+Three view levels, because a transcript is mostly machinery. Auditing a run wants every tool
+call; judging whether the agent is being sensible wants none of them.
+
+| view | shows |
+|---|---|
+| **mirror** | only what was said, by either side. Reads like the chat itself. |
+| **medium** | the conversation plus what the agent did. The default. |
+| **verbose** | everything, including a marker for each stretch of reasoning. |
+
+Under the list, a panel always shows the selected moment in full: what kind it was, whether
+it is already rated, whether a tool call has returned yet, and the untruncated text. Rating
+something you have only half read is a guess, and this removes the guess.
 
 The agent does not stop. It finds out at its next tool call and adjusts.
 
