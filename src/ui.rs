@@ -2,9 +2,14 @@
 //!
 //! Design constraints that outrank everything else, from `CLAUDE.md`:
 //!
-//! - rating costs exactly one keystroke
-//! - the agent's own terminal keeps focus, because this is a separate pane, not a wrapper
+//! - rating costs exactly one keystroke once this pane has focus
+//! - this pane never intercepts a key the agent's terminal wanted
 //! - a parse that returns nothing says so on screen rather than looking idle
+//!
+//! The second is not the same as "the agent keeps focus", and an earlier version of this
+//! comment conflated them. A terminal pane only receives keys when it is focused, so rating
+//! costs a pane switch, then one key. The honest claim is that margin never steals a key
+//! from the agent, not that focus never moves.
 //!
 //! Two implementation notes worth keeping:
 //!
@@ -66,8 +71,9 @@ struct App {
     /// reconstructing it by walking back up the store's own path.
     store_root: PathBuf,
     list: ListState,
-    /// Whether to stick to the newest moment as new ones arrive.
-    following: bool,
+    /// How many moments sit below the cursor. Shown so the user knows work is happening
+    /// further down without the cursor being yanked there.
+    unseen: usize,
     mode: Mode,
     status: Option<String>,
     parsed_lines: usize,
@@ -142,9 +148,20 @@ impl App {
             self.reload_ratings();
         }
 
-        if self.following && !self.moments.is_empty() {
+        // The cursor never moves on its own.
+        //
+        // It used to jump to the newest moment whenever one arrived while following. That is
+        // a correctness bug, not a preference: a moment landing between the user looking at
+        // a row and pressing a key means the keypress rates something they never saw. Wrong
+        // target is the worst failure this tool has, so new moments now only ever appear
+        // below the cursor and `g` is the one way to jump.
+        if self.list.selected().is_none() && !self.moments.is_empty() {
             self.list.select(Some(self.moments.len() - 1));
         }
+        self.unseen = self
+            .moments
+            .len()
+            .saturating_sub(self.list.selected().map_or(0, |i| i + 1));
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -155,9 +172,7 @@ impl App {
         let cur = self.list.selected().unwrap_or(0) as isize;
         let next = (cur + delta).clamp(0, last as isize) as usize;
         self.list.select(Some(next));
-        // Moving away from the end means the user is inspecting history; stop yanking the
-        // cursor to the bottom every time the agent does something.
-        self.following = next == last;
+        self.unseen = last - next;
     }
 
     fn rate(&mut self, verdict: Verdict, note: Option<String>) {
@@ -234,7 +249,7 @@ pub fn run(path: PathBuf, harness_kind: Harness, replay: bool) -> Result<()> {
         store: Store::for_session(&root, harness_kind.as_str(), &session_id),
         store_root: root.clone(),
         list: ListState::default(),
-        following: true,
+        unseen: 0,
         mode: Mode::default(),
         status: None,
         parsed_lines: 0,
@@ -317,10 +332,26 @@ fn event_loop(
         match rx.recv_timeout(IDLE_TICK) {
             Ok(Signal::Quit) => return Ok(()),
             Ok(Signal::FileChanged) => {
-                // Drain any other events that piled up so a burst of writes costs one redraw.
-                while rx.try_recv().is_ok() {}
+                // Coalesce further file events so a burst of writes costs one redraw, but
+                // keep any keypresses that arrived in the same window. Draining the channel
+                // indiscriminately silently ate ratings: the user pressed a key, the file
+                // happened to change first, and the keypress was discarded with the
+                // duplicate file events.
+                let mut keys = Vec::new();
+                while let Ok(sig) = rx.try_recv() {
+                    match sig {
+                        Signal::Key(k) => keys.push(k),
+                        Signal::Quit => return Ok(()),
+                        Signal::FileChanged => {}
+                    }
+                }
                 let lines = tailer.poll()?;
                 app.absorb(&lines);
+                for k in keys {
+                    if handle_key(app, k) {
+                        return Ok(());
+                    }
+                }
             }
             Ok(Signal::Key(key)) => {
                 if handle_key(app, key) {
@@ -381,8 +412,8 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             if !app.moments.is_empty() {
                 app.list.select(Some(app.moments.len() - 1));
             }
-            app.following = true;
-            app.status = Some("following the newest moment".into());
+            app.unseen = 0;
+            app.status = Some("jumped to the newest moment".into());
         }
 
         KeyCode::Char('f') => app.rate(Verdict::Up, None),
@@ -547,10 +578,13 @@ fn draw_moments(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App) {
-    let text = match (&app.status, app.following) {
+    let text = match (&app.status, app.unseen) {
         (Some(s), _) => Span::styled(format!("  {s}"), Style::new().fg(ACCENT)),
-        (None, true) => Span::styled("  following", Style::new().fg(DIM)),
-        (None, false) => Span::styled("  paused, g to follow again", Style::new().fg(DIM)),
+        (None, 0) => Span::styled("  at the newest moment", Style::new().fg(DIM)),
+        (None, n) => Span::styled(
+            format!("  {n} newer below, g to jump"),
+            Style::new().fg(WARN),
+        ),
     };
     f.render_widget(Paragraph::new(Line::from(text)), area);
 }
@@ -708,7 +742,7 @@ pub fn draw_demo(f: &mut Frame) {
         store: Store::for_session(std::path::Path::new("/tmp"), "claude-code", "demo"),
         store_root: PathBuf::from("/tmp"),
         list,
-        following: true,
+        unseen: 3,
         mode: Mode::Browsing,
         status: Some("noted, the agent hears it at its next tool call".into()),
         parsed_lines: 42,
@@ -772,6 +806,105 @@ fn demo_extra_moments(from: usize) -> Vec<Moment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_for_test(moments: Vec<Moment>) -> App {
+        let mut list = ListState::default();
+        if !moments.is_empty() {
+            list.select(Some(moments.len() - 1));
+        }
+        App {
+            harness: Harness::ClaudeCode,
+            path: PathBuf::from("t.jsonl"),
+            session_id: "t".into(),
+            moments,
+            verdicts: HashMap::new(),
+            notes: HashMap::new(),
+            store: Store::for_session(
+                &std::env::temp_dir().join("margin-ui-test"),
+                "claude-code",
+                "t",
+            ),
+            store_root: std::env::temp_dir().join("margin-ui-test"),
+            list,
+            unseen: 0,
+            mode: Mode::Browsing,
+            status: None,
+            parsed_lines: 0,
+            hook_live: false,
+        }
+    }
+
+    fn line(uuid: &str, text: &str) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": uuid,
+            "sessionId": "t",
+            "timestamp": "2026-08-20T12:00:00Z",
+            "message": { "role": "assistant", "content": [ { "type": "text", "text": text } ] }
+        })
+        .to_string()
+    }
+
+    /// The worst bug this tool can have is rating the wrong moment. New moments arriving
+    /// must never move the cursor out from under a keypress.
+    #[test]
+    fn arriving_moments_never_move_the_cursor() {
+        let mut app = app_for_test(Vec::new());
+        app.absorb(&[line("a", "first"), line("b", "second")]);
+
+        let aimed_at = app.list.selected().unwrap();
+        let aimed_id = app.moments[aimed_at].id.clone();
+
+        // the agent keeps working while the user is deciding
+        app.absorb(&[line("c", "third"), line("d", "fourth")]);
+
+        assert_eq!(
+            app.list.selected(),
+            Some(aimed_at),
+            "cursor moved on its own"
+        );
+        assert_eq!(app.moments[app.list.selected().unwrap()].id, aimed_id);
+        assert_eq!(app.unseen, 2, "should report how many arrived below");
+    }
+
+    #[test]
+    fn the_cursor_only_moves_on_a_keypress() {
+        let mut app = app_for_test(Vec::new());
+        app.absorb(&[line("a", "one"), line("b", "two"), line("c", "three")]);
+        let start = app.list.selected().unwrap();
+
+        app.move_by(-1);
+        assert_eq!(app.list.selected(), Some(start - 1));
+        assert_eq!(app.unseen, 1);
+
+        app.move_by(-5); // clamps rather than underflowing
+        assert_eq!(app.list.selected(), Some(0));
+    }
+
+    /// A rating must land on whatever the cursor is on, not on whatever is newest.
+    #[test]
+    fn rating_targets_the_selected_moment_not_the_newest() {
+        let dir = std::env::temp_dir().join(format!("margin-ui-rate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut app = app_for_test(Vec::new());
+        app.store = Store::for_session(&dir, "claude-code", "t");
+        app.store_root = dir.clone();
+
+        app.absorb(&[line("a", "one"), line("b", "two"), line("c", "three")]);
+        app.move_by(-2); // aim at the oldest
+        let target = app.moments[app.list.selected().unwrap()].id.clone();
+
+        app.absorb(&[line("d", "four")]); // agent keeps working
+        app.rate(Verdict::Down, Some("this one".into()));
+
+        let saved = app.store.all().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            saved[0].moment, target,
+            "rated a moment the user was not pointing at"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn subject_labels_separate_tools_from_prose() {

@@ -34,8 +34,12 @@ A second terminal pane, next to the agent, not wrapping it.
 ```
 
 Left pane is untouched. Margin never intercepts a key the agent's terminal wanted, because
-it is a different pane with its own focus. That is rule 2 satisfied by architecture rather
-than by discipline.
+it is a different pane with its own focus.
+
+That satisfies "never steal a key", which is not the same as "focus never moves". A terminal
+pane only receives keys while focused, so rating in practice costs a pane switch and then one
+key. An earlier draft of this document claimed the stronger property; it was wrong, and the
+weaker one is the one worth keeping.
 
 ### Keys
 
@@ -44,7 +48,7 @@ j / k      move the cursor down / up through moments
 f          thumbs up      (favour)
 d          thumbs down
 D          thumbs down, then one line of why
-g          jump to newest, and follow live
+g          jump to the newest moment
 ```
 
 Rating is one key. The note is a deliberate second action, offered only when you want it.

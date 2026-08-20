@@ -377,9 +377,11 @@ fn install(write: bool, settings: Option<PathBuf>, statusline: bool) -> Result<(
     let pretty = serde_json::to_string_pretty(&config)?;
 
     if !write {
+        // JSON on stdout, prose on stderr. Printing both to stdout made the output
+        // unparseable, so anyone piping this into jq got a syntax error at the last line.
         println!("{pretty}");
-        println!();
-        println!("Merge that into your Claude Code settings, or rerun with --write.");
+        eprintln!();
+        eprintln!("Merge that into your Claude Code settings, or rerun with --write.");
         return Ok(());
     }
 

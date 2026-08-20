@@ -30,7 +30,19 @@ That is the entire gap margin fills.
 margin opens a pane beside your agent listing every moment it produces: what it **said**,
 what it **did**, what it **thought**. You move with `j` and `k` and press one key.
 
+| key | does |
+|---|---|
+| `j` `k` | move the cursor |
+| `f` | approve |
+| `d` | reject |
+| `D` | reject, then type one line of why |
+| `g` | jump to the newest moment |
+
 The agent does not stop. It finds out at its next tool call and adjusts.
+
+The cursor never moves on its own. New moments appear below it and the status line says how
+many are waiting, so a moment arriving between your glance and your keypress can never
+change what you rate.
 
 ```
   margin claude-code 9c42ba52  10 moments  2 rated
@@ -53,8 +65,19 @@ margin install --write     # wires the hooks into Claude Code
 Then, in a second pane next to your agent:
 
 ```bash
-margin watch
+margin watch            # from now on
+margin watch --replay   # include everything already in the session
 ```
+
+margin also writes into Claude Code's own status line, so you can see queued and delivered
+counts without looking away:
+
+```
+[your existing status line]  margin +2 -1 queued  3 sent
+```
+
+`margin install --statusline` wraps whatever status line you already have rather than
+replacing it.
 
 That is the whole setup. margin never wraps, patches, or launches your agent. It reads the
 transcript your harness already writes and uses the hooks it already supports.
@@ -76,7 +99,7 @@ anything. A rejection is recorded after the second command:
 ```
  1. (Get-ChildItem -Path "alpha" -Filter "*.txt" -File | Measure-Object).Count
  2. (Get-ChildItem -Path "beta"  -Filter "*.txt" -File | Measure-Object).Count
-    ← you press d, type "use [System.IO.Directory]::GetFiles instead", agent keeps running
+    ← you press D, type "use [System.IO.Directory]::GetFiles instead", agent keeps running
  3. [System.IO.Directory]::GetFiles("gamma",   "*.txt").Length
  4. [System.IO.Directory]::GetFiles("delta",   "*.txt").Length
  5. [System.IO.Directory]::GetFiles("epsilon", "*.txt").Length
@@ -181,7 +204,10 @@ These are enforced, not aspirational. See [CLAUDE.md](CLAUDE.md).
 
 1. **One keystroke.** No mode switch, no mouse, no confirmation. The moment rating takes two
    deliberate actions, people stop doing it and the tool is dead.
-2. **Never steal focus.** A separate pane, not a wrapper.
+2. **Never steal a key from the agent.** A separate pane, not a wrapper. Note this is not
+   the same as "focus never moves": a terminal pane only receives keys when focused, so
+   rating costs a pane switch and then one key. margin never intercepts a keystroke the
+   agent's terminal wanted.
 3. **Never touch the harness.** No patching, no wrapping. Only files it already writes and
    hooks it already supports.
 4. **Degrade loudly.** If a format changes and margin parses nothing, it says so on screen.
